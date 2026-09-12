@@ -2,7 +2,7 @@
 #
 # LibreOffice Cowork — installer
 #
-#   curl -fsSL https://raw.githubusercontent.com/<owner>/libreoffice-cowork/main/setup.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/brandon-nuttall/libreoffice-cowork/main/setup.sh | bash
 #
 # Installs two things:
 #   1. the Cowork extension (.oxt) into your LibreOffice
