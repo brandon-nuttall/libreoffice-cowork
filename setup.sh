@@ -184,24 +184,59 @@ find_python_uno() {
 DSH_BIN=""
 find_dsh() {
   step "Checking the DeepSeek Harness"
+
+  # Search every place a dsh actually ends up, in order of how deliberate the
+  # installation was. Each of these has been the *only* hit on some machine:
+  #
+  #   * COWORK_DSH_BIN      explicit override
+  #   * PATH                a global npm install
+  #   * ~/.npm/_npx/*       `npx @deepseek-ai/dsh`, which is what this project's
+  #                         own documentation produces and therefore the common case
+  #   * a local node_modules, for someone running from a checkout
+  #
+  # The npx glob goes deep on purpose: the package lives at
+  # ~/.npm/_npx/<hash>/node_modules/@deepseek-ai/dsh/lib/bin.js, which is five
+  # levels down. An earlier `find -maxdepth 4` silently matched nothing, so a
+  # perfectly good installation was reported as missing.
+  local candidate=""
   if [ -n "${COWORK_DSH_BIN:-}" ]; then
-    DSH_BIN="$COWORK_DSH_BIN"
-  elif command -v dsh >/dev/null; then
-    DSH_BIN="$(command -v dsh)"
+    candidate="$COWORK_DSH_BIN"
+  elif command -v dsh >/dev/null 2>&1; then
+    candidate="$(command -v dsh)"
   else
-    # An npx-style install keeps dsh under a content-addressed directory.
-    local found
-    found="$(find "$HOME/.npm/_npx" -maxdepth 4 -type f \
-              -path '*/@deepseek-ai/dsh/lib/bin.js' 2>/dev/null | head -1 || true)"
-    [ -n "$found" ] && DSH_BIN="$found"
+    local hit
+    for pattern in \
+      "$HOME"/.npm/_npx/*/node_modules/@deepseek-ai/dsh/lib/bin.js \
+      "$HOME"/.npm/_npx/*/node_modules/.bin/dsh \
+      "$HOME"/node_modules/@deepseek-ai/dsh/lib/bin.js \
+      /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
+      /usr/lib/node_modules/@deepseek-ai/dsh/lib/bin.js
+    do
+      for hit in $pattern; do
+        [ -e "$hit" ] && { candidate="$hit"; break; }
+      done
+      [ -n "$candidate" ] && break
+    done
   fi
 
-  if [ -z "$DSH_BIN" ] || [ ! -e "$DSH_BIN" ]; then
-    die "the DeepSeek Harness ('dsh') was not found.
+  if [ -n "$candidate" ] && [ -e "$candidate" ]; then
+    DSH_BIN="$candidate"
+    ok "$DSH_BIN"
+    return 0
+  fi
+
+  # Nothing found. Say what was tried, so the next person does not have to guess
+  # whether the tool is absent or the search was wrong.
+  warn "could not find 'dsh'. Looked at:"
+  say  "      \$COWORK_DSH_BIN           ${COWORK_DSH_BIN:-<unset>}"
+  say  "      PATH                      $(command -v dsh 2>/dev/null || echo '<not on PATH>')"
+  say  "      ~/.npm/_npx/*/…/dsh       $(ls -d "$HOME"/.npm/_npx/*/node_modules/@deepseek-ai/dsh 2>/dev/null | head -1 || echo '<none>')"
+  say  ""
+  say  "  If you have run 'npx @deepseek-ai/dsh' before, point at it directly:"
+  say  "      COWORK_DSH_BIN=$(ls "$HOME"/.npm/_npx/*/node_modules/@deepseek-ai/dsh/lib/bin.js 2>/dev/null | head -1 || echo /path/to/dsh/lib/bin.js) ./setup.sh"
+  die "the DeepSeek Harness ('dsh') was not found.
   Install it with:   npm install -g @deepseek-ai/dsh
   or point at it:    COWORK_DSH_BIN=/path/to/dsh/lib/bin.js ./setup.sh"
-  fi
-  ok "$DSH_BIN"
 }
 
 # The profile composes bundles that ship inside the dsh installation, so the
