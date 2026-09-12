@@ -12,6 +12,11 @@ set -euo pipefail
 WORKSPACE="${1:-/home/brandon/opt/libreoffice-cowork}"
 NEUTRAL="$WORKSPACE/.neutral"
 TESTHOME="$WORKSPACE/.curltest-real"
+# The installer writes a systemd unit under $HOME and the agent under
+# ~/.local/share, so HOME must also point somewhere writable. Redirecting only
+# DSH_HOME left those half-installed and made the test fail for a reason that
+# has nothing to do with the code under test.
+FAKEHOME="$TESTHOME/home"
 
 rm -rf "$NEUTRAL" "$TESTHOME"
 mkdir -p "$NEUTRAL" "$TESTHOME/loprofile" "$TESTHOME/dshhome"
@@ -25,6 +30,7 @@ ls -A "$NEUTRAL"
 echo
 
 cd "$NEUTRAL"
+HOME="$FAKEHOME" \
 DSH_HOME="$TESTHOME/dshhome" \
 COWORK_LO_PROFILE="$TESTHOME/loprofile" \
 COWORK_DSH_BIN=/home/brandon/.dsh/profiles/node_modules/@deepseek-ai/dsh/lib/bin.js \
