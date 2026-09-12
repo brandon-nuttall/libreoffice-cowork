@@ -33,12 +33,13 @@ panel, and the point is to get work done on the document.
 """
 
 import os
+import threading
 import traceback
 
 import uno
 import unohelper
 
-from com.sun.star.awt import XActionListener, XWindowListener, XTextListener
+from com.sun.star.awt import XActionListener, XCallback, XWindowListener, XTextListener
 from com.sun.star.awt.PosSize import POSSIZE
 from com.sun.star.ui import XUIElementFactory, XUIElement, XToolPanel
 from com.sun.star.ui import XSidebarPanel
@@ -75,6 +76,39 @@ _FALLBACK_WIDTH = 240
 # any individual panel instance.
 _TRANSCRIPTS = {}
 _DEFAULT_KEY = "(no document)"
+
+# ---------------------------------------------------------------------------
+# Thread hand-off.
+#
+# A turn must not run on the VCL thread: the socket blocks for as long as the
+# model takes, and a frozen LibreOffice looks broken. But VCL controls are not
+# thread-safe either, so the worker cannot touch them.
+#
+# `com.sun.star.awt.AsyncCallback` is the supported bridge. It is created from
+# the panel's own context (it is not creatable from a bare script context, which
+# is what made an earlier attempt look impossible), and `addCallback` may be
+# called from any thread: the callback's `notify` then runs on the GUI thread.
+# Verified in the office — `notify` reported thread "MainThread" while being
+# invoked from a worker.
+#
+# Events are queued and drained inside `notify`, so the worker never blocks on
+# the UI and ordering is preserved.
+# ---------------------------------------------------------------------------
+
+_QUEUE = []
+_QUEUE_LOCK = threading.Lock()
+
+
+def _emit(item):
+    with _QUEUE_LOCK:
+        _QUEUE.append(item)
+
+
+def _drain():
+    with _QUEUE_LOCK:
+        items, _QUEUE[:] = list(_QUEUE), []
+    return items
+
 
 def _log(msg):
     try:
@@ -185,6 +219,54 @@ class _PanelListener(unohelper.Base, XActionListener, XTextListener):
         self.element = None
 
 
+def _turn_worker(element, prompt):
+    """Runs one turn off the GUI thread, reporting progress through the queue."""
+    try:
+        document = element.frame.getController().getModel().getURL() or ""
+    except Exception:
+        document = ""
+
+    def on_event(kind, payload):
+        if kind == "chunk":
+            element.post_from_worker(("chunk", payload.get("text", "")))
+        elif kind == "tool":
+            element.post_from_worker(("reset", None))
+            element.post_from_worker(("tool", payload.get("name", "")))
+
+    try:
+        final = AgentClient().ask(document, prompt, on_event,
+                                 should_stop=lambda: element._closing)
+        element.post_from_worker(("final", final))
+    except AgentUnavailable as exc:
+        element.post_from_worker(("error", str(exc)))
+    except Exception as exc:  # noqa: BLE001
+        element.post_from_worker(("error", "That did not work: %s" % exc))
+    finally:
+        element.post_from_worker(("done", None))
+
+
+class _MainThreadPump(unohelper.Base, XCallback):
+    """Runs on the GUI thread; drains the worker's queue into the controls.
+
+    Kept referenced by the element for the panel's lifetime: a garbage-collected
+    callback is a silently dead panel, the same class of bug as an
+    unreferenced listener.
+    """
+
+    def __init__(self, element):
+        self.element = element
+
+    def notify(self, _data):
+        element = self.element
+        if element is None:
+            return
+        for item in _drain():
+            try:
+                element.deliver(item)
+            except Exception:
+                _log(traceback.format_exc())
+
+
 class CoworkToolPanel(unohelper.Base, XToolPanel, XSidebarPanel):
     def __init__(self, window, height):
         self.Window = window
@@ -223,6 +305,13 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         self._resize_listener = None
         self._busy = False
         self._last_tool = None
+        self._closing = False
+        # True while a reply is being streamed into the last transcript line.
+        self._streaming = False
+        # AsyncCallback + its callback object must both outlive every turn.
+        self._async = None
+        self._pump = None
+        self._worker = None
 
     def getRealInterface(self):
         if self._panel is None:
@@ -304,6 +393,18 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             if button is not None:
                 button.addActionListener(listener)
         self._listeners.append(listener)
+
+        # Created here rather than in __init__ so it belongs to the same context
+        # that built the controls.
+        try:
+            self._async = self.ctx.ServiceManager.createInstanceWithContext(
+                "com.sun.star.awt.AsyncCallback", self.ctx)
+            self._pump = _MainThreadPump(self)
+        except Exception:
+            self._async = None
+            self._pump = None
+            _log("AsyncCallback unavailable, turns will run on the UI thread:\n%s"
+                 % traceback.format_exc())
 
         _log("controls built: %s" % sorted(self._controls))
 
@@ -445,16 +546,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
     # -- behaviour ----------------------------------------------------- //
 
     def submit(self):
-        """Send the composer text as the next message in this conversation.
-
-        The turn runs on this thread. That is a deliberate trade: the panel has
-        no reliable way to marshal a worker thread's output onto the VCL thread
-        (the usual `AsyncCallback`/timer services were not creatable here), and a
-        UI that updates mid-turn is worth less than one that never corrupts its
-        own controls. Because the socket streams, the transcript grows as the
-        answer arrives; the only thing given up is redrawing during a long tool
-        call, which is what the busy label covers.
-        """
+        """Send the composer text as the next message in this conversation."""
         composer = self._controls.get("txtComposer")
         if composer is None or self._busy:
             return
@@ -472,64 +564,90 @@ class CoworkUIElement(unohelper.Base, XUIElement):
 
         self._append("You", text)
         self._set_busy(True)
-        self._run_turn(text)
-        self._set_busy(False)
+
+        if self._async is None or self._pump is None:
+            # No marshalling available: run inline rather than refuse. The turn
+            # still works, it just cannot redraw while it waits.
+            self._run_turn(text)
+            self._set_busy(False)
+            return
+
+        try:
+            self._worker = threading.Thread(
+                target=_turn_worker, args=(self, text), name="cowork-turn",
+                daemon=True)
+            self._worker.start()
+        except Exception as exc:  # noqa: BLE001
+            _log("could not start the worker: %s" % exc)
+            self._run_turn(text)
+            self._set_busy(False)
+
+    def post_from_worker(self, item):
+        """Hand one item to the GUI thread. Callable from any thread."""
+        # Recorded so a real run can prove the hop: a `deliver` line whose thread
+        # differs from the `posted` line is the marshalling working.
+        _log("posted %r from %s" % (item[0], threading.current_thread().name))
+        _emit(item)
+        try:
+            self._async.addCallback(self._pump, None)
+        except Exception:
+            # Marshalling failed; the next pump will still collect the item if
+            # anything else wakes the queue.
+            _log("addCallback failed:\n%s" % traceback.format_exc())
+
+    # -- applying worker output (GUI thread only) ----------------------- //
+
+    def deliver(self, item):
+        kind = item[0]
+        _log("delivering %r on %s" % (kind, threading.current_thread().name))
+        if kind == "chunk":
+            piece = item[1]
+            if piece:
+                if not self._streaming:
+                    self._streaming = True
+                    self._begin_reply()
+                self._extend_reply(piece)
+        elif kind == "reset":
+            # A tool call interrupts the prose; the next text starts a new line.
+            self._streaming = False
+        elif kind == "tool":
+            name = item[1]
+            if name != self._last_tool:
+                self._last_tool = name
+                self._append("Cowork", self._describe_tool(name))
+                self._streaming = False
+        elif kind == "final":
+            if item[1] and self._streaming:
+                self._replace_reply(item[1])
+            elif item[1]:
+                self._append("Cowork", item[1])
+        elif kind == "error":
+            self._append("Cowork", item[1])
+        elif kind == "done":
+            self._streaming = False
+            self._set_busy(False)
 
     def _run_turn(self, prompt):
-        """Stream one reply into the transcript."""
+        """The inline path, used only when AsyncCallback is unavailable."""
+        self._streaming = False
         try:
             document = self.frame.getController().getModel().getURL() or ""
         except Exception:
             document = ""
-        state = {"streaming": False}
 
         def on_event(kind, payload):
             if kind == "chunk":
-                piece = payload.get("text", "")
-                if not piece:
-                    return
-                if not state["streaming"]:
-                    state["streaming"] = True
-                    self._begin_reply()
-                self._extend_reply(piece)
+                self.deliver(("chunk", payload.get("text", "")))
             elif kind == "tool":
-                name = payload.get("name", "")
-                if name != self._last_tool:
-                    self._last_tool = name
-                    self._append("Cowork", self._describe_tool(name))
-                    state["streaming"] = False
+                self.deliver(("tool", payload.get("name", "")))
 
         try:
             final = AgentClient().ask(document, prompt, on_event)
+            self.deliver(("final", final))
         except AgentUnavailable as exc:
-            self._append("Cowork", str(exc))
-            return
+            self.deliver(("error", str(exc)))
         except Exception as exc:  # noqa: BLE001
-            self._append("Cowork", "That did not work: %s" % exc)
-            return
-
-        if final and not state["streaming"]:
-            self._append("Cowork", final)
-        elif final:
-            self._replace_reply(final)
-
-    def _begin_reply(self):
-        self._lines().append("Cowork\n")
-
-    def _extend_reply(self, text):
-        lines = self._lines()
-        if not lines:
-            lines.append("Cowork\n" + text)
-        else:
-            lines[-1] = lines[-1] + text
-        self._render()
-
-    def _replace_reply(self, text):
-        """Swap the streamed approximation for the authoritative final text."""
-        lines = self._lines()
-        if lines:
-            lines[-1] = "Cowork\n" + text
-        self._render()
+            self.deliver(("error", "That did not work: %s" % exc))
 
     def clear(self):
         """Start a fresh thread for this document."""

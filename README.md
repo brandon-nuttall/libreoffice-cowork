@@ -136,21 +136,19 @@ One `undo` restored the original document exactly.
 and one conversation per document; the panel streams replies into the transcript and
 shows what the agent is doing while it works.
 
+Turns run on a worker thread and are marshalled onto the GUI thread with
+`com.sun.star.awt.AsyncCallback`, so the panel keeps drawing while the agent works.
+There is also a **Cowork ▸ Show Cowork Panel** menu entry, so the panel is reachable
+without hunting for the sidebar deck.
+
 **Not finished:** Impress support, tables and images in Writer, cancellation of a
-running turn, and the write-safety classifier. The panel also runs each turn on the UI
-thread — see *Known limitations* below for why, and what it costs.
+running turn, and the write-safety classifier. The model also cannot yet ask you a
+structured question mid-turn — see below.
 
 ## Known limitations
 
 Real ones, worth knowing before you rely on it:
 
-- **A turn blocks the LibreOffice UI while it runs.** The panel found no reliable way
-  in this build to marshal a worker thread's output onto the VCL thread
-  (`com.sun.star.awt.AsyncCallback` and the timing service were not creatable from the
-  panel's own context), so each turn runs inline. The transcript streams as the answer
-  arrives and the Send button shows a busy label, but a long tool call will not redraw.
-  Doing this properly means confirming the right marshalling API inside the office, or
-  moving rendering out of the panel entirely.
 - **Rendering needs a saved document.** `document_render` exports the *live* document so
   unsaved edits appear in the render — that is deliberate, and it was a bug when it
   exported the file on disk instead. But a document that has never been saved has no
@@ -158,6 +156,12 @@ Real ones, worth knowing before you rely on it:
 - **Writer and Calc only.** Impress tools are described but not implemented.
 - **One turn at a time.** The service refuses a concurrent turn, because a single
   conversation thread with interleaved replies is unreadable.
+- **The agent cannot ask you a structured question.** `ask_user_question` is a tool over
+  `ctx.userQuestions`, whose only production answerer is registered by the Web client and
+  delivered over its Remote WebSocket. The SDK transport the panel speaks has no
+  request/response channel, so there is nothing to answer it with. The same seam governs
+  approval prompts. The threading fix above is the precondition for closing this, and it
+  is now done.
 
 ## What is here
 

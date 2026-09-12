@@ -855,3 +855,94 @@ it. **Always build definitions with `defineTool` and pass the result to
 7. The entire turn is one Ctrl-Z (F10, D4).
 
 **No MCP anywhere in the path.**
+
+---
+
+# THREADING FIX — SOLVED (and it was solvable all along)
+
+The panel could not update during a turn, which made it unable to show progress,
+ask a question, or present an approval. That blocked the question/approval work
+entirely, so it was the precondition.
+
+## F18 — `com.sun.star.awt.AsyncCallback` works; my earlier probe was wrong
+
+I had concluded that `AsyncCallback` "was not creatable from the panel's context".
+**That conclusion was wrong, and the error was in the probe, not the platform.**
+
+What I did earlier: probed for the service from a *user Scripts* Python context via
+the script provider, and from plain system Python. Both reported it unavailable.
+
+What is actually true, verified inside the office:
+
+```
+XCallback interface available: True
+AsyncCallback created: pyuno object (com.sun.star.uno.XInterface){implementationName=com.sun.star.awt.comp.AsyncCallback,
+    supportedServices={com.sun.star.awt.AsyncCallback},
+    supportedInterfaces={XServiceInfo, com.sun.star.awt.XRequestCallback, XTypeProvider, XWeak}}
+notify() fired: True
+notify() ran on thread: 'MainThread'
+script thread is: 'Dummy-1'
+=> marshalled to another thread: True
+```
+
+The service is obtainable with
+`smgr.createInstanceWithContext("com.sun.star.awt.AsyncCallback", ctx)`, and
+**`addCallback` may be called from a worker thread — `notify` then runs on
+`MainThread`.** That is exactly the marshalling the panel needed.
+
+The reference implementation (`dandi-91/LibreOffice-Bielik-Agent`) does the same
+thing, which is what prompted me to retest rather than trust my earlier result.
+
+**Lesson worth keeping:** "this API does not exist" is a claim about *where I
+looked*, not about the platform. Both of my earlier probes used a context the
+panel does not run in.
+
+## F19 — The panel now streams from a worker thread
+
+`submit()` starts a worker; the worker calls `Client.ask()` and pushes events with
+`post_from_worker`, which appends to a queue and calls `_async.addCallback(pump,
+None)`. `pump.notify()` runs on the GUI thread and drains the queue into the
+controls. The callback and the `AsyncCallback` are both held on the element, since
+a garbage-collected callback is a silently dead panel — the same failure class as
+an unreferenced listener.
+
+If `AsyncCallback` is ever unavailable, the panel **falls back to running inline**
+rather than refusing: the turn still works, it just cannot redraw while it waits.
+
+## F20 — A menu entry, and the API details that cost a round trip each
+
+The panel was only reachable by opening the sidebar and clicking the deck. There is
+now a top-level **Cowork ▸ Show Cowork Panel** menu entry backed by a dispatch
+handler (`ProtocolHandler.xcu` + `Addons.xcu`).
+
+This also makes the panel's turn path reachable without a person: a click cannot be
+fired from outside the office, but a dispatch URL can.
+
+Four specifics, each found by getting it wrong first:
+
+1. **`XDispatch.initialize` receives the Frame**, and it is called *after*
+   `queryDispatch`. Holding a frame snapshot at dispatch-construction time gives
+   `None`; the dispatch must resolve the frame when it runs.
+2. **`XFrame.getController()`, not `getCurrentController()`.** The latter belongs to
+   the model — `AttributeError: getCurrentController`.
+3. **`XSidebar.showDecks()` rejects a Python sequence** at the bridge:
+   `CannotConvertException: Type 20 is not supported!` — for both a tuple and a list.
+4. **`XDeck.activate(True)` takes one argument**, and that is the call that switches
+   decks: `activate()` alone raises `IllegalArgumentException: incorrect number of
+   parameters passed invoking function activate: expected 1, got 0`.
+
+Verified end to end:
+
+```
+before: CoworkDeck active = False
+after : CoworkDeck active = True
+handler log: sidebar visible, deck CoworkDeck active
+             layout: parent=350x1196 inner=338 transcript_h=1120
+```
+
+## What this unblocks
+
+The question/approval seam. A panel that can redraw during a turn can now render a
+structured question or an approval prompt mid-turn, which is what
+`ctx.userQuestions` has been waiting for. Before this fix that work was not
+buildable — a synchronous panel has nowhere to draw a question.

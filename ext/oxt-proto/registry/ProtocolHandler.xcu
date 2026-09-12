@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Routes com.cowork:* URLs to our dispatch handler.
+     The node name MUST equal the component's implementation name
+     (IMPL_NAME in cowork_commands.py) or the menu entry appears and does
+     nothing at all, with no error anywhere. -->
+<oor:component-data xmlns:oor="http://openoffice.org/2001/registry"
+    xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    oor:name="ProtocolHandler" oor:package="org.openoffice.Office">
+  <node oor:name="HandlerSet">
+    <node oor:name="com.cowork.CommandHandler" oor:op="replace">
+      <prop oor:name="Protocols" oor:type="oor:string-list">
+        <value>com.cowork:*</value>
+      </prop>
+    </node>
+  </node>
+</oor:component-data>

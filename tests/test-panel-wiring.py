@@ -60,7 +60,8 @@ def install_uno_stubs():
     module("com.sun.star.awt",
            XActionListener=type("XActionListener", (), {}),
            XWindowListener=type("XWindowListener", (), {}),
-           XTextListener=type("XTextListener", (), {}))
+           XTextListener=type("XTextListener", (), {}),
+           XCallback=type("XCallback", (), {}))
     module("com.sun.star.awt.PosSize", POSSIZE=12)
     module("com.sun.star.ui",
            XUIElementFactory=type("XUIElementFactory", (), {}),
@@ -102,7 +103,7 @@ class FakeFrame:
 
 
 class FakeElement:
-    """Only the surface `_run_turn` and `submit` actually touch."""
+    """Only the surface the turn paths actually touch."""
 
     def __init__(self, url):
         self.frame = FakeFrame(url)
@@ -139,6 +140,18 @@ class FakeElement:
 
     def _describe_tool(self, name):
         return panel.CoworkUIElement._describe_tool(name)
+
+    # the threaded path
+    _streaming = False
+    _closing = False
+    _last_tool = None
+
+    def deliver(self, item):
+        panel.CoworkUIElement.deliver(self, item)
+
+    def post_from_worker(self, item):
+        """Stand in for AsyncCallback: apply immediately, on this thread."""
+        self.deliver(item)
 
     def transcript(self):
         return "\n".join(self.lines)
@@ -220,6 +233,30 @@ def main():
           "Checking the layout" in text, repr(text))
     check("the raw tool name is not shown to the user",
           "document_check_layout" not in text, repr(text))
+
+    print("\nthe threaded path (what the panel actually uses)")
+    FakeClient.calls = []
+    FakeClient.script = (("chunk", {"text": "streamed "}),
+                         ("tool", {"name": "document_read"}),
+                         ("chunk", {"text": "answer"}),
+                         ("done", {"text": "answer"}))
+    FakeClient.raises = None
+    original = panel.AgentClient
+    panel.AgentClient = FakeClient
+    threaded = FakeElement("file:///tmp/report.odt")
+    try:
+        # `_turn_worker` is what runs off the UI thread; post_from_worker stands
+        # in for the AsyncCallback hop, so this asserts the real worker code.
+        panel._turn_worker(threaded, "do the thing")
+    finally:
+        panel.AgentClient = original
+    text = threaded.transcript()
+    check("the worker streams text into the transcript",
+          "streamed" in text, repr(text))
+    check("it reports the tool in the user's terms",
+          "Reading the document" in text, repr(text))
+    check("the final text is applied",
+          text.strip().endswith("answer"), repr(text))
 
     print("\nhandling an unreachable service")
     element = run("unreachable", raises=panel.AgentUnavailable(
