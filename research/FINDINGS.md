@@ -946,3 +946,50 @@ The question/approval seam. A panel that can redraw during a turn can now render
 structured question or an approval prompt mid-turn, which is what
 `ctx.userQuestions` has been waiting for. Before this fix that work was not
 buildable — a synchronous panel has nowhere to draw a question.
+
+---
+
+# VERIFICATION GAP — the honest record
+
+## F21 — I could screenshot *a* desktop, but not my own
+
+Chasing the ability to see the UI, I found the GNOME desktop portal reachable over
+D-Bus from the sandbox, and it works:
+
+```python
+iface.Screenshot("", {"handle_token": token, "interactive": False}, ...)
+# → file:///home/brandon/Pictures/Screenshot-N.png
+```
+
+`org.gnome.Shell.Screenshot` is *not* usable (`AccessDenied: Screenshot is not
+allowed`), but `org.freedesktop.portal.Screenshot` is, and returns a full
+3440x1440 PNG of the real session.
+
+**The problem is what that is.** It captures the actual desktop, which means
+photographing whatever the user is doing at the time, and the LibreOffice window
+under test usually sits behind their browser anyway. Using it while someone is
+working is intrusive, and it is not a repeatable method.
+
+So: the capability exists and was worth discovering, but the answer is a virtual
+display this project owns — captured as **M6** in `PLAN.md`.
+
+## What has already gone wrong because of this
+
+| Bug | How it was found |
+|---|---|
+| A caption repeating "Cowork" three times | **User** |
+| The transcript rendering empty on open | **User** |
+| A redundant collapsible panel header | **User** |
+| A wrong property name silently deleting both text areas | Instrumentation (per-control try/except with a log) — not eyes |
+
+Every one of those passed the programmatic checks. The panel reported
+`layout: parent=350x1196 inner=338 transcript_h=1120` — correct arithmetic — while
+drawing an empty box. **Logs describe intent; only pixels describe what a person
+sees.**
+
+## Standing rule until M6 lands
+
+Treat any claim about appearance in this project as unverified, and label it that
+way. The evidence I can offer is real but narrow: control properties, geometry
+arithmetic, registration state, and deck activation. That is not the same as
+having looked at it.

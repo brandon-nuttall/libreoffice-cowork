@@ -239,6 +239,47 @@ Every risky unknown this project had is now settled by an executed experiment.
 | S-7 | Model + mode pickers | S | Selecting a model changes the route |
 | S-8 | Cancel / stop control for long turns | S | Cancels cleanly (depends on T-13) |
 
+### M6 — An isolated desktop to look at the UI in
+
+**Highest-priority infrastructure item.** Everything in this project that is
+visual has been verified only by inference: the layout is checked by arithmetic
+and logs, the panel is checked through its controls, and the deck is checked by
+`XDeck.isActive()`. Not one pixel has ever been *looked at*. Two design
+mistakes have already shipped because of that — a duplicate caption, and a
+transcript that rendered empty — and both were caught by the user, not by me.
+
+**Constraint that forced this onto the plan:** there is no way to see the UI
+without contending with the person using the machine. The only route found was
+the GNOME desktop portal over D-Bus, which captures **the real desktop** — so
+taking a screenshot means photographing whatever the user is doing, and the
+window under test usually sits behind their browser anyway. That is fine once,
+as a diagnostic, and unacceptable as a working method.
+
+**Goal:** a virtual display this project owns, where LibreOffice can be launched,
+driven, and photographed without touching the real session.
+
+| ID | Item | Size | Acceptance test |
+|---|---|---|---|
+| V-1 | Stand up a headless X server (`Xvfb` or `Xephyr`) on a private display, plus `xwd`/`ImageMagick` to capture and convert | M | A known test pattern can be drawn and read back as a PNG |
+| V-2 | Launch LibreOffice on that display with the extension and a document, and capture the sidebar | M | `View ▸ Sidebar ▸ Cowork` is visible in the capture, legible at 2× zoom |
+| V-3 | Drive the UI in the sandbox: activate the deck, type in the composer, press Send, wait, capture the result | M | A full turn is visible in the transcript **in a picture**, not in a log line |
+| V-4 | Capture the empty state, a streaming turn, an error, and a long reply — the states that are easy to get wrong | S | Four images reviewed, not asserted |
+| V-5 | Screenshot regression: keep the images and diff them after panel changes | M | A deliberate layout change shows up as a diff |
+| V-6 | A minimal window manager, so window size and focus are controllable rather than accidental | S | The window can be given an exact geometry before capture |
+
+**Notes for whoever picks this up:**
+
+- Package installs (`xvfb`, `x11-apps`, `imagemagick`) may need approval; check
+  whether `Xvfb` can be replaced by `weston --backend=headless` or a nested
+  `sway`, both of which draw on the machine already.
+- LibreOffice on a bare X server needs a window manager for correct sizing;
+  without one it may open at an unhelpful default size. Hence V-6.
+- The extension's own log is not a substitute for a screenshot and never was:
+  it reported `layout: parent=350x1196` while the panel was, in fact, drawing an
+  empty transcript.
+- Do **not** use the desktop portal for this. It was the right tool to discover
+  the capability and the wrong tool to depend on.
+
 ### M5 — Packaging, ops, and reach
 
 | ID | Problem | Size | Acceptance test |
@@ -268,6 +309,10 @@ user opens LibreOffice and talks to it".
 
 Then, in order:
 
+0. **M6/V-1…V-3** — an isolated desktop, before any more UI work. Every remaining
+   UI task is currently unverifiable, and the two visual bugs that have shipped
+   were both found by the user rather than by me. Doing this first also makes
+   M4's remaining surface work testable as it lands.
 1. **H-5** — a small local agent service the panel can reach, holding one runtime session.
 2. **M4/S-2…S-4** — transcript, composer, selection chip, and clickable citations in the
    panel, so the conversation is usable rather than merely correct.
@@ -285,6 +330,7 @@ undo the whole turn with one Ctrl-Z.
 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
+| **Visual work cannot be verified** | **Certain — it is happening now** | **M6.** Mitigated today only by careful inference: layout arithmetic, control introspection over UNO, `XDeck.isActive()`. Two visual bugs have already reached the user this way. Until M6 lands, treat every visual claim in this project as unverified and say so. |
 | **Sidebar is more expensive than expected (U1)** | High | Time-boxed F-6 spike first; hybrid fallback (c) |
 | UNO thread-safety bites under real load | Medium | D6 `AsyncCallback` marshalling from the start (T-10), load test F-7 |
 | Formula translation has long-tail cases | Medium | T-2 first; test Excel-isms (`_xlfn.`, quoted sheets, array spilling) |
