@@ -35,3 +35,24 @@ after a change to the extension:
 3. **The panel fills its width.** If it is a thin strip, the resize listener is
    not firing — the sidebar creates the panel while its parent window is still
    0×0, so a one-shot layout gives invisible controls.
+
+## `test-panel-wiring.py`
+
+Exercises the sidebar panel's call path without LibreOffice.
+
+The panel is the one piece that cannot be smoke-tested from a script — it needs a GUI,
+a live document, and someone to press Send. That makes the seam between the panel and the
+agent service the least tested and most silently breakable part of the project.
+
+This test stubs UNO just enough to import the component, hands the **real**
+`_run_turn` code a fake element and a fake client, and asserts what the panel would put
+on screen: that the document URL (not the prompt) is passed as the document, that a
+streamed reply lands in the transcript, that tool calls are described in the user's terms
+rather than shown as raw names, and that an unreachable service produces an honest
+message instead of a claim that something changed.
+
+```sh
+python3 tests/test-panel-wiring.py
+```
+
+It needs no GUI, no network, and no LibreOffice.
