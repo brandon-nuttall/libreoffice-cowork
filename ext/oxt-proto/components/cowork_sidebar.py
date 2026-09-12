@@ -1,5 +1,9 @@
 """Cowork sidebar panel — the visible agent surface inside LibreOffice.
 
+This is a conversation about the document you have open, not a question-and-answer
+box. It keeps one running thread per document, shows what the agent is doing while
+it works, and stays out of the way otherwise.
+
 Wiring (all four pieces must agree or the deck silently never appears):
   * ``registry/.../Sidebar.xcu``   — declares the Deck + Panel; the Panel's
     ImplementationURL is ``private:resource/toolpanel/CoworkSidebar/CoworkPanel``.
@@ -19,9 +23,13 @@ Layout gotchas (the classic "blank panel" bugs), all handled below:
   * Control instances and their listeners must be kept referenced, or Python
     garbage-collects them and the panel goes dead.
 
-The transcript is kept in a module-level store keyed by document URL, so it
+The conversation is kept in a module-level store keyed by document URL, so it
 survives the sidebar tearing the panel down and rebuilding it (switching decks,
-reloading a document).
+reloading a document) and so each document keeps its own thread.
+
+Deliberately absent: a redundant in-panel title, and any framing that suggests
+the point is to ask questions. LibreOffice already draws the deck name above the
+panel, and the point is to get work done on the document.
 """
 
 import os
@@ -36,12 +44,37 @@ from com.sun.star.ui import XUIElementFactory, XUIElement, XToolPanel
 from com.sun.star.ui import XSidebarPanel
 from com.sun.star.ui.UIElementType import TOOLPANEL
 
+# The client is plain Python with no UNO dependency, so the streaming path can
+# be tested against a live service without a GUI.
+try:
+    from cowork_client import AgentClient, AgentUnavailable
+except ImportError:  # the extension dir is not always on sys.path
+    import os as _os
+    import sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from cowork_client import AgentClient, AgentUnavailable
+
 # MUST equal FactoryImplementation in Factories.xcu.
 IMPL_NAME = "com.cowork.SidebarFactory"
 
-_LOG = os.environ.get("COWORK_SIDEBAR_LOG",
-                      "/home/brandon/opt/libreoffice-cowork/research/sidebar.log")
+_LOG = os.environ.get("COWORK_SIDEBAR_LOG") or os.path.join(
+    os.path.expanduser("~"), ".cache", "cowork-sidebar.log")
 
+# Panel metrics. The panel asks for a generous height because a conversation
+# needs room; if the sidebar gives less, the transcript absorbs the difference.
+_PANEL_PREFERRED_HEIGHT = 420
+_PANEL_MIN_HEIGHT = 200
+_MARGIN = 6
+_GAP = 4
+_COMPOSER_HEIGHT = 30
+_BUTTON_HEIGHT = 26
+_MIN_INNER_WIDTH = 80
+_FALLBACK_WIDTH = 240
+
+# Per-document conversations, keyed by document URL. Module-level so they outlive
+# any individual panel instance.
+_TRANSCRIPTS = {}
+_DEFAULT_KEY = "(no document)"
 
 def _log(msg):
     try:
@@ -50,25 +83,54 @@ def _log(msg):
     except Exception:
         pass
 
-_MARGIN = 6
-_MIN_INNER_WIDTH = 80
-_FALLBACK_WIDTH = 240
-
-# Per-document conversation transcripts, keyed by document URL. Module-level so
-# they outlive any individual panel instance.
-_TRANSCRIPTS = {}
-_DEFAULT_KEY = "(no document)"
-
 
 def _doc_key(frame):
     """Identify the conversation by document, so each document keeps its own."""
     try:
-        controller = frame.getController()
-        model = controller.getModel()
-        url = model.getURL()
-        return url or _DEFAULT_KEY
+        return frame.getController().getModel().getURL() or _DEFAULT_KEY
     except Exception:
         return _DEFAULT_KEY
+
+
+def _doc_name(frame):
+    try:
+        url = frame.getController().getModel().getURL()
+        return url.rsplit("/", 1)[-1] or "this untitled document"
+    except Exception:
+        return "this document"
+
+
+def _greeting(frame):
+    """The opening line of a conversation.
+
+    States what the agent is looking at and what it can do, then stops. It is
+    not a question: an empty box with a question in it invites typing, whereas
+    this reads as the top of a thread already in progress.
+
+    It also says plainly whether the service is up. A panel that silently does
+    nothing when its backend is missing is the worst version of this UI.
+    """
+    base = ("Working on %s. I can read it, edit it, restructure it, and check "
+            "how the result looks — everything I change in one go is a single "
+            "undo step." % _doc_name(frame))
+    status = _service_status()
+    if status is None:
+        return (base + "\n\nI cannot reach the Cowork service, so I cannot "
+                "change anything yet. Start it with:\n"
+                "    python3 dsh/libreoffice/cowork/cowork_agent.py")
+    if not status.get("runtime"):
+        return (base + "\n\nThe Cowork service is running but its agent "
+                "runtime is not ready. Check the service log for why.")
+    return base + " Tell me what you want done."
+
+
+def _service_status():
+    """Probe the service once per panel build. None means unreachable."""
+    try:
+        reply = AgentClient().ping()
+    except Exception:
+        return None
+    return reply if reply.get("reachable") else None
 
 
 class _RelayoutListener(unohelper.Base, XWindowListener):
@@ -95,18 +157,29 @@ class _RelayoutListener(unohelper.Base, XWindowListener):
         self.element = None
 
 
-class _SendListener(unohelper.Base, XActionListener, XTextListener):
-    """Send on button click, or on Enter in the composer."""
+class _PanelListener(unohelper.Base, XActionListener, XTextListener):
+    """Send on button click or Enter; Clear empties the thread."""
 
     def __init__(self, element):
         self.element = element
 
-    def actionPerformed(self, _event):
-        if self.element is not None:
-            self.element.submit()
+    def actionPerformed(self, event):
+        element = self.element
+        if element is None:
+            return
+        try:
+            source = event.Source
+            model = source.getModel()
+            label = getattr(model, "Label", "")
+        except Exception:
+            label = ""
+        if label == "Clear":
+            element.clear()
+        else:
+            element.submit()
 
     def textChanged(self, _event):
-        pass  # reserved: typing indicator / slash-command completion
+        pass  # reserved: typing indicator, slash-command completion
 
     def disposing(self, _event):
         self.element = None
@@ -126,9 +199,9 @@ class CoworkToolPanel(unohelper.Base, XToolPanel, XSidebarPanel):
     # XSidebarPanel — the sidebar sizes the panel from this answer.
     def getHeightForWidth(self, _width):
         size = uno.createUnoStruct("com.sun.star.ui.LayoutSize")
-        size.Minimum = self._height
-        size.Preferred = self._height
-        size.Maximum = self._height
+        size.Minimum = _PANEL_MIN_HEIGHT
+        size.Preferred = max(self._height, _PANEL_PREFERRED_HEIGHT)
+        size.Maximum = max(self._height, _PANEL_PREFERRED_HEIGHT)
         return size
 
     def getMinimalWidth(self):
@@ -148,11 +221,13 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         self._controls = {}
         self._listeners = []
         self._resize_listener = None
+        self._busy = False
+        self._last_tool = None
 
     def getRealInterface(self):
         if self._panel is None:
             root = self._build_window()
-            self._panel = CoworkToolPanel(root, 260)
+            self._panel = CoworkToolPanel(root, _PANEL_PREFERRED_HEIGHT)
         return self._panel
 
     # -- construction -------------------------------------------------- //
@@ -162,22 +237,30 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             "com.sun.star.awt.%s" % kind, self.ctx)
 
     def _control(self, container, name, kind, model_kind, **props):
-        """Create one control defensively: a control that fails to build must
-        not take the whole panel down with it."""
+        """Create one control defensively.
+
+        A control that fails to build must not take the whole panel with it —
+        but it must also not do so *silently*, because a missing control is
+        exactly the "blank panel" bug. Failures are logged with the property
+        that caused them.
+        """
         try:
             control = self._new(kind)
             model = self._new(model_kind)
             for key, value in props.items():
-                setattr(model, key, value)
+                try:
+                    setattr(model, key, value)
+                except Exception as exc:  # noqa: BLE001
+                    _log("property %s=%r rejected on %s: %s: %s"
+                         % (key, value, model_kind, type(exc).__name__, exc))
+                    raise
             control.setModel(model)
             container.addControl(name, control)
             self._controls[name] = control
             _log("control OK: %s (%s)" % (name, kind))
             return control
-        except Exception as exc:  # noqa: BLE001
-            _log("control FAILED: %s (%s): %s: %s"
-                 % (name, kind, type(exc).__name__, exc))
-            _log(traceback.format_exc())
+        except Exception:
+            _log("control FAILED: %s (%s)\n%s" % (name, kind, traceback.format_exc()))
             return None
 
     def _build_window(self):
@@ -188,47 +271,61 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         container.createPeer(toolkit, self.parent_window)
         self._root = container
 
-        self._control(container, "lblTitle", "UnoControlFixedText",
-                      "UnoControlFixedTextModel",
-                      Label="Cowork — ask about this document",
-                      MultiLine=False, Align=0)
-
+        # The conversation occupies the top and absorbs all spare height. No
+        # caption above it: LibreOffice already names the deck, and a second
+        # title would waste the most valuable strip of the panel.
         self._control(container, "txtTranscript", "UnoControlEdit",
-                      "UnoControlEditModel", MultiLine=True, ReadOnly=True,
-                      VScroll=True, AutoVScroll=True)
+                      "UnoControlEditModel",
+                      MultiLine=True,
+                      ReadOnly=True,          # a transcript, not an input field
+                      VScroll=True,
+                      AutoVScroll=True,
+                      Border=True,            # marks the region as the thread
+                      HideInactiveSelection=False,
+                      Tabstop=True)
 
-        edit = self._control(container, "txtComposer", "UnoControlEdit",
-                             "UnoControlEditModel", MultiLine=False,
-                             VScroll=False)
-        if edit is not None:
-            text_listener = _SendListener(self)
-            edit.addTextListener(text_listener)
-            self._listeners.append(text_listener)
+        self._control(container, "txtComposer", "UnoControlEdit",
+                      "UnoControlEditModel",
+                      MultiLine=False,
+                      Border=True,
+                      VScroll=False)
 
-        send = self._control(container, "btnSend", "UnoControlButton",
-                             "UnoControlButtonModel", Label="Send", PushButtonType=0)
-        clear = self._control(container, "btnClear", "UnoControlButton",
-                              "UnoControlButtonModel", Label="Clear", PushButtonType=0)
-        action_listener = _SendListener(self)
-        for button in (send, clear):
+        composer = self._controls.get("txtComposer")
+        if composer is not None:
+            listener = _PanelListener(self)
+            composer.addTextListener(listener)
+            self._listeners.append(listener)
+
+        listener = _PanelListener(self)
+        for name, label in (("btnSend", "Send"), ("btnClear", "Clear")):
+            button = self._control(container, name, "UnoControlButton",
+                                   "UnoControlButtonModel",
+                                   Label=label, PushButtonType=0)
             if button is not None:
-                button.addActionListener(action_listener)
-        self._listeners.append(action_listener)
+                button.addActionListener(listener)
+        self._listeners.append(listener)
 
         _log("controls built: %s" % sorted(self._controls))
-        self._refresh_transcript()
+
+        # Seed the conversation the first time this document is seen, so the
+        # panel never opens blank.
+        key = _doc_key(self.frame)
+        if key not in _TRANSCRIPTS:
+            _TRANSCRIPTS[key] = [_greeting(self.frame)]
+        self._render()
+
         self._resize_listener = _RelayoutListener(self)
         for target in (self.parent_window, container):
             try:
                 target.addWindowListener(self._resize_listener)
             except Exception:
-                traceback.print_exc()
+                _log(traceback.format_exc())
 
         self.layout()
         try:
             container.setVisible(True)
         except Exception:
-            traceback.print_exc()
+            _log(traceback.format_exc())
         return container
 
     # -- layout -------------------------------------------------------- //
@@ -247,106 +344,231 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                     container.setPosSize(0, 0, psize.Width, psize.Height, POSSIZE)
                     csize = container.getPosSize()
                     width, height = csize.Width, csize.Height
-            _log("layout: parent=%dx%d container=%dx%d"
-                 % (psize.Width, psize.Height, csize.Width, csize.Height))
             if width <= 0:
                 width = _FALLBACK_WIDTH
-            if height <= 40:
-                height = 260
+            if height <= 60:
+                height = _PANEL_PREFERRED_HEIGHT
             inner = max(width - 2 * _MARGIN, _MIN_INNER_WIDTH)
 
-            # Vertical stack: title / transcript (flex) / composer / buttons.
-            title_h = 18
-            compose_h = 26
-            button_h = 26
-            transcript_y = _MARGIN + title_h + 4
-            buttons_y = height - _MARGIN - button_h
-            composer_y = buttons_y - 4 - compose_h
-            transcript_h = max(composer_y - 4 - transcript_y, 40)
+            # Bottom stack is fixed; the conversation takes everything left.
+            buttons_y = height - _MARGIN - _BUTTON_HEIGHT
+            composer_y = buttons_y - _GAP - _COMPOSER_HEIGHT
+            transcript_y = _MARGIN
+            transcript_h = max(composer_y - _GAP - transcript_y, 60)
 
-            self._place("lblTitle", _MARGIN, _MARGIN, inner, title_h)
             self._place("txtTranscript", _MARGIN, transcript_y, inner, transcript_h)
-            self._place("txtComposer", _MARGIN, composer_y, inner, compose_h)
-            half = max((inner - 4) // 2, 30)
-            self._place("btnSend", _MARGIN, buttons_y, half, button_h)
-            self._place("btnClear", _MARGIN + half + 4, buttons_y,
-                        inner - half - 4, button_h)
+            self._place("txtComposer", _MARGIN, composer_y, inner, _COMPOSER_HEIGHT)
+            half = max((inner - _GAP) // 2, 30)
+            self._place("btnSend", _MARGIN, buttons_y, half, _BUTTON_HEIGHT)
+            self._place("btnClear", _MARGIN + half + _GAP, buttons_y,
+                        inner - half - _GAP, _BUTTON_HEIGHT)
+            _log("layout: parent=%dx%d inner=%d transcript_h=%d"
+                 % (psize.Width, psize.Height, inner, transcript_h))
         except Exception:
-            traceback.print_exc()
+            _log(traceback.format_exc())
 
-    def _place(self, name, x, y, w, h):
+    def _control_by_name(self, name):
+        """Find a control, falling back to the container.
+
+        `_controls` is the fast path, but a control created before a failure can
+        still live in the container. Asking the container keeps this honest and
+        makes the panel inspectable from outside for testing.
+        """
         control = self._controls.get(name)
         if control is not None:
-            try:
-                control.setPosSize(x, y, max(w, 10), max(h, 10), POSSIZE)
-            except Exception:
-                traceback.print_exc()
+            return control
+        if self._root is None:
+            return None
+        try:
+            found = self._root.getControl(name)
+            if found is not None:
+                self._controls[name] = found
+            return found
+        except Exception:
+            return None
 
-    # -- behaviour ----------------------------------------------------- //
+    def _place(self, name, x, y, w, h):
+        control = self._control_by_name(name)
+        if control is None:
+            return
+        try:
+            control.setPosSize(x, y, max(w, 10), max(h, 10), POSSIZE)
+        except Exception:
+            _log(traceback.format_exc())
 
-    def _refresh_transcript(self):
+    # -- conversation rendering ---------------------------------------- //
+
+    def _lines(self):
+        return _TRANSCRIPTS.setdefault(_doc_key(self.frame), [])
+
+    def _render(self):
+        """Redraw the transcript, scrolled to the newest line."""
         control = self._controls.get("txtTranscript")
         if control is None:
             return
-        lines = _TRANSCRIPTS.get(_doc_key(self.frame), [])
+        text = "\n\n".join(self._lines())
         try:
-            control.setText("\n".join(lines))
+            control.setText(text)
+            # Keep the end in view, the way a chat window does.
+            try:
+                control.setSelection(uno.createUnoStruct("com.sun.star.awt.Selection",
+                                                         0, len(text)))
+            except Exception:
+                pass
         except Exception:
-            traceback.print_exc()
+            _log("setText failed:\n%s" % traceback.format_exc())
+
+    def _append(self, speaker, message):
+        lines = self._lines()
+        lines.append("%s\n%s" % (speaker, message))
+        # Keep the store bounded so a long session cannot grow without limit.
+        if len(lines) > 120:
+            del lines[:-120]
+        self._render()
+
+    def _set_busy(self, busy, label="Send"):
+        """Reflect that a turn is running.
+
+        The button label is the only affordance this panel has for 'working';
+        without it a slow turn looks like a broken one.
+        """
+        self._busy = busy
+        button = self._controls.get("btnSend")
+        if button is None:
+            return
+        try:
+            button.getModel().Label = "…" if busy else label
+            button.getModel().Enabled = not busy
+        except Exception:
+            _log(traceback.format_exc())
+
+    # -- behaviour ----------------------------------------------------- //
 
     def submit(self):
-        """Take the composer text, append it to the transcript, and reply.
+        """Send the composer text as the next message in this conversation.
 
-        The reply is produced by ``_respond``, which is where the agent call
-        goes. For this spike it is a deterministic local stub so the panel can
-        be verified without a running harness.
+        The turn runs on this thread. That is a deliberate trade: the panel has
+        no reliable way to marshal a worker thread's output onto the VCL thread
+        (the usual `AsyncCallback`/timer services were not creatable here), and a
+        UI that updates mid-turn is worth less than one that never corrupts its
+        own controls. Because the socket streams, the transcript grows as the
+        answer arrives; the only thing given up is redrawing during a long tool
+        call, which is what the busy label covers.
         """
         composer = self._controls.get("txtComposer")
-        if composer is None:
+        if composer is None or self._busy:
             return
         try:
             text = composer.getText().strip()
         except Exception:
-            traceback.print_exc()
+            _log(traceback.format_exc())
             return
         if not text:
             return
         try:
             composer.setText("")
         except Exception:
-            traceback.print_exc()
+            _log(traceback.format_exc())
 
-        transcript = _TRANSCRIPTS.setdefault(_doc_key(self.frame), [])
-        transcript.append("You: %s" % text)
-        transcript.append("Cowork: %s" % self._respond(text))
-        # Keep the store bounded so a long session cannot grow without limit.
-        if len(transcript) > 200:
-            del transcript[:-200]
-        self._refresh_transcript()
+        self._append("You", text)
+        self._set_busy(True)
+        self._run_turn(text)
+        self._set_busy(False)
 
-    def _respond(self, prompt):
-        """The seam where the harness is called.
-
-        Returns a fact about the live document, proving the panel can reach the
-        document model through the same process.
-        """
+    def _run_turn(self, prompt):
+        """Stream one reply into the transcript."""
         try:
-            controller = self.frame.getController()
-            model = controller.getModel()
-            name = model.getURL().rsplit("/", 1)[-1] or "this document"
-            selection = ""
-            try:
-                sel = controller.getSelection()
-                if sel is not None:
-                    selection = " (something is selected)"
-            except Exception:
-                pass
-            return ("[stub] I can see %s%s. Wire a harness here to go further."
-                    % (name, selection))
+            document = self.frame.getController().getModel().getURL() or ""
+        except Exception:
+            document = ""
+        state = {"streaming": False}
+
+        def on_event(kind, payload):
+            if kind == "chunk":
+                piece = payload.get("text", "")
+                if not piece:
+                    return
+                if not state["streaming"]:
+                    state["streaming"] = True
+                    self._begin_reply()
+                self._extend_reply(piece)
+            elif kind == "tool":
+                name = payload.get("name", "")
+                if name != self._last_tool:
+                    self._last_tool = name
+                    self._append("Cowork", self._describe_tool(name))
+                    state["streaming"] = False
+
+        try:
+            final = AgentClient().ask(document, prompt, on_event)
+        except AgentUnavailable as exc:
+            self._append("Cowork", str(exc))
+            return
         except Exception as exc:  # noqa: BLE001
-            return "[stub] panel alive; document probe failed: %s" % exc
+            self._append("Cowork", "That did not work: %s" % exc)
+            return
+
+        if final and not state["streaming"]:
+            self._append("Cowork", final)
+        elif final:
+            self._replace_reply(final)
+
+    def _begin_reply(self):
+        self._lines().append("Cowork\n")
+
+    def _extend_reply(self, text):
+        lines = self._lines()
+        if not lines:
+            lines.append("Cowork\n" + text)
+        else:
+            lines[-1] = lines[-1] + text
+        self._render()
+
+    def _replace_reply(self, text):
+        """Swap the streamed approximation for the authoritative final text."""
+        lines = self._lines()
+        if lines:
+            lines[-1] = "Cowork\n" + text
+        self._render()
+
+    def clear(self):
+        """Start a fresh thread for this document."""
+        _TRANSCRIPTS[_doc_key(self.frame)] = [_greeting(self.frame)]
+        self._render()
+
+    @staticmethod
+    def _describe_tool(name):
+        """Turn a tool name into something a person understands.
+
+        This is not a developer console: "document_check_layout" means nothing to
+        the person waiting, whereas the sentence below says what is happening to
+        their document.
+        """
+        return {
+            "document_list": "Looking at what you have open…",
+            "document_read": "Reading the document…",
+            "document_outline": "Reading the document structure…",
+            "document_find": "Searching the document…",
+            "document_append": "Adding to the document…",
+            "document_replace": "Editing the document…",
+            "document_check_layout": "Checking the layout…",
+            "document_render": "Rendering the page to look at it…",
+            "read_image": "Looking at the rendered page…",
+            "document_end_turn": "Finishing the turn…",
+            "document_undo": "Undoing that…",
+            "document_track_changes": "Turning tracked changes on…",
+            "document_revisions": "Reading the tracked changes…",
+            "sheet_read_range": "Reading the spreadsheet…",
+            "sheet_write_range": "Writing to the spreadsheet…",
+            "skill": "Checking how best to do this…",
+            "bash": "Running a command…",
+            "read": "Reading a file…",
+            "write": "Writing a file…",
+        }.get(name, "Working…")
 
     def postDisposing(self):
+        # Signal the worker before tearing anything down: a turn may still be
+        # streaming, and it must not append to a disposed control.
         if self._resize_listener is not None:
             for target in (self.parent_window, self._root):
                 try:
@@ -383,7 +605,7 @@ class CoworkSidebarFactory(unohelper.Base, XUIElementFactory):
         try:
             return CoworkUIElement(self.ctx, frame, parent, url)
         except Exception:
-            traceback.print_exc()
+            _log(traceback.format_exc())
             return None
 
 

@@ -668,50 +668,95 @@ def _row_index(ref):
 
 # ── rendering (the visual-verification pipeline) ────────────────────────────
 
-def _render(doc, outdir, pages=None, dpi=100):
-    """Export the document to PNG page images for a vision review.
+_last_export_error = []
 
-    A private user profile is mandatory: reusing the interactive profile makes
-    the conversion process fight the running office for the profile lock and
-    die (observed: exit 134). Headless conversion must never share a profile
-    with the interactive instance.
+
+def _export_pdf_from_live(doc, pdf_path):
+    """Export the OPEN document to PDF, including unsaved edits.
+
+    `storeToURL` writes a copy and does not change the document's own file
+    association or mark it unmodified, so this is safe to call on a document the
+    user is actively editing.
+
+    This exists because the obvious implementation — shell out to
+    `soffice --convert-to pdf <path>` — converts the file ON DISK. The agent
+    edits the live document, those edits are unsaved, and so the rendered page
+    showed the document as it was before the agent touched it. An agent that
+    renders stale content and reports "looks fine" is worse than one that cannot
+    render at all, because it is confidently wrong.
     """
-    url = doc.getURL()
-    if not url.startswith("file://"):
-        raise UnoError(
-            "this document has never been saved, so it cannot be rendered yet. "
-            "Save it first (the agent may do that only with explicit permission).")
-    path = uno.fileUrlToSystemPath(url)
-    if not os.path.exists(path):
-        raise UnoError("the document path does not exist on disk: %s" % path)
+    try:
+        doc.storeToURL(
+            uno.systemPathToFileUrl(pdf_path),
+            (_pv("FilterName", "writer_pdf_Export"),
+             _pv("Overwrite", True)))
+        return True
+    except Exception as exc:  # noqa: BLE001
+        _last_export_error.append(str(exc))
+        return False
 
+
+def _render(doc, outdir, pages=None, dpi=100):
+    """Render the live document to PNG page images for a visual review.
+
+    Prefers an in-process export so unsaved edits are included. Falls back to a
+    headless conversion of the file on disk only when the document has never
+    been saved, where the in-process export has no baseline to work from.
+    """
     os.makedirs(outdir, exist_ok=True)
-    profile = os.path.join(outdir, "_lo-profile")
-    os.makedirs(profile, exist_ok=True)
+    pdf = os.path.join(outdir, "render.pdf")
 
-    pdf_base = os.path.join(outdir, "render")
-    cmd = [
-        "soffice", "--headless", "--norestore", "--nolockcheck",
-        "-env:UserInstallation=file://%s" % profile,
-        "--convert-to", "pdf", "--outdir", outdir, path,
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-    pdf = os.path.join(outdir, os.path.splitext(os.path.basename(path))[0] + ".pdf")
-    if not os.path.exists(pdf):
-        raise UnoError("PDF export produced no file.\nstdout: %s\nstderr: %s"
-                       % (proc.stdout[-500:], proc.stderr[-500:]))
+    exported_live = _export_pdf_from_live(doc, pdf)
+    source = "live document (includes unsaved edits)"
 
-    convert = ["pdftoppm", "-r", str(dpi), "-png", pdf, pdf_base]
+    if not exported_live:
+        url = doc.getURL()
+        if not url.startswith("file://"):
+            raise UnoError(
+                "this document has never been saved, so there is nothing to "
+                "render. Save it once and try again.")
+        path = uno.fileUrlToSystemPath(url)
+        if not os.path.exists(path):
+            raise UnoError("the document path does not exist on disk: %s" % path)
+        # A private profile is mandatory here: reusing the interactive profile
+        # makes the conversion process fight the running office for the profile
+        # lock and die (observed: exit 134).
+        profile = os.path.join(outdir, "_lo-profile")
+        os.makedirs(profile, exist_ok=True)
+        proc = subprocess.run(
+            ["soffice", "--headless", "--norestore", "--nolockcheck",
+             "-env:UserInstallation=file://%s" % profile,
+             "--convert-to", "pdf", "--outdir", outdir, path],
+            capture_output=True, text=True, timeout=300)
+        produced = os.path.join(
+            outdir, os.path.splitext(os.path.basename(path))[0] + ".pdf")
+        if not os.path.exists(produced):
+            raise UnoError(
+                "PDF export produced no file.\nstdout: %s\nstderr: %s\n"
+                "(in-process export error: %s)"
+                % (proc.stdout[-400:], proc.stderr[-400:],
+                   _last_export_error[-1] if _last_export_error else "none"))
+        pdf = produced
+        source = "saved file on disk (the document has never been saved)"
+
+    # Clear stale pages so a shorter document cannot leave old images behind.
+    for existing in os.listdir(outdir):
+        if existing.startswith("render-") and existing.endswith(".png"):
+            os.remove(os.path.join(outdir, existing))
+
+    base = os.path.join(outdir, "render")
+    command = ["pdftoppm", "-r", str(dpi), "-png"]
     if pages:
-        convert = (["pdftoppm", "-r", str(dpi), "-png",
-                    "-f", str(pages[0]), "-l", str(pages[-1]), pdf, pdf_base])
-    proc = subprocess.run(convert, capture_output=True, text=True, timeout=300)
+        command += ["-f", str(pages[0]), "-l", str(pages[-1])]
+    command += [pdf, base]
+    proc = subprocess.run(command, capture_output=True, text=True, timeout=300)
     if proc.returncode != 0:
-        raise UnoError("pdftoppm failed: %s" % proc.stderr[-500:])
+        raise UnoError("pdftoppm failed: %s" % proc.stderr[-400:])
 
     images = sorted(f for f in os.listdir(outdir)
-                    if f.startswith("render") and f.endswith(".png"))
-    return {"pdf": pdf, "images": [os.path.join(outdir, f) for f in images]}
+                    if f.startswith("render-") and f.endswith(".png"))
+    return {"pdf": pdf, "source": source,
+            "images": [os.path.join(outdir, f) for f in images]}
 
 
 # ── operation dispatch ──────────────────────────────────────────────────────

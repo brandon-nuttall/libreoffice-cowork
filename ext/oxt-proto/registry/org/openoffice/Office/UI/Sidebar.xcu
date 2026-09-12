@@ -30,9 +30,10 @@
 
     <node oor:name="PanelList">
       <node oor:name="CoworkPanel" oor:op="replace">
-        <prop oor:name="Title" oor:type="xs:string">
-          <value xml:lang="en-US">Cowork</value>
-        </prop>
+        <!-- No Title on purpose. The deck tab already says "Cowork", and a panel
+             title renders as a second, collapsible header saying the same word
+             for no benefit. The schema template (ToolPanel in main.xcd) carries
+             no Title, so omitting it is supported. -->
         <prop oor:name="Id" oor:type="xs:string"><value>CoworkPanel</value></prop>
         <prop oor:name="DeckId" oor:type="xs:string"><value>CoworkDeck</value></prop>
         <prop oor:name="ContextList">

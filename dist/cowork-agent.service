@@ -1,0 +1,26 @@
+[Unit]
+Description=Cowork agent — the service behind the LibreOffice Cowork sidebar
+Documentation=https://github.com/brandon-nuttall/libreoffice-cowork
+# The agent spawns a harness runtime and reaches LibreOffice over a local UNO
+# pipe, so it does not need LibreOffice to already be running. It does need the
+# user session, because that is where LibreOffice's pipe lives.
+After=graphical-session.target
+
+[Service]
+Type=simple
+# The agent talks to the harness on stdout/stderr and to the panel on a
+# loopback socket, so it is happy as an ordinary user service.
+ExecStart=%h/.local/share/libreoffice-cowork/cowork_agent.py
+Restart=on-failure
+RestartSec=5
+
+# The service can edit the user's documents, so keep it in the user's own
+# context with no extra privileges.
+NoNewPrivileges=true
+PrivateTmp=false
+
+Environment=COWORK_PROFILE=libreoffice
+Environment=COWORK_AGENT_PORT=8765
+
+[Install]
+WantedBy=default.target

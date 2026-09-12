@@ -132,13 +132,32 @@ turn/end           → completed
 
 One `undo` restored the original document exactly.
 
-**What is not finished:** the sidebar panel does not yet talk to a runtime session —
-it renders and has the send hook, but the reply is still stubbed. That is the next
-piece of work, and it is the difference between "works when driven by a script" and
-"you open LibreOffice and talk to it".
+**The sidebar is wired to the agent.** A `cowork-agent` service owns the harness runtime
+and one conversation per document; the panel streams replies into the transcript and
+shows what the agent is doing while it works.
 
-Also not done: Impress support, tables and images in Writer, cancellation of a running
-turn, the write-safety classifier, and per-document conversation persistence.
+**Not finished:** Impress support, tables and images in Writer, cancellation of a
+running turn, and the write-safety classifier. The panel also runs each turn on the UI
+thread — see *Known limitations* below for why, and what it costs.
+
+## Known limitations
+
+Real ones, worth knowing before you rely on it:
+
+- **A turn blocks the LibreOffice UI while it runs.** The panel found no reliable way
+  in this build to marshal a worker thread's output onto the VCL thread
+  (`com.sun.star.awt.AsyncCallback` and the timing service were not creatable from the
+  panel's own context), so each turn runs inline. The transcript streams as the answer
+  arrives and the Send button shows a busy label, but a long tool call will not redraw.
+  Doing this properly means confirming the right marshalling API inside the office, or
+  moving rendering out of the panel entirely.
+- **Rendering needs a saved document.** `document_render` exports the *live* document so
+  unsaved edits appear in the render — that is deliberate, and it was a bug when it
+  exported the file on disk instead. But a document that has never been saved has no
+  baseline to export from, and the tool says so rather than rendering something stale.
+- **Writer and Calc only.** Impress tools are described but not implemented.
+- **One turn at a time.** The service refuses a concurrent turn, because a single
+  conversation thread with interleaved replies is unreadable.
 
 ## What is here
 
@@ -147,6 +166,8 @@ turn, the write-safety classifier, and per-document conversation persistence.
 | `ext/oxt-proto/` | The LibreOffice extension: bridge job, sidebar panel, registrations |
 | `dsh/libreoffice/` | The harness profile — document tools, persona, and skills |
 | `dsh/libreoffice/cowork/uno_bridge.py` | The document bridge (UNO ⇄ JSON over stdio) |
+| `dsh/libreoffice/cowork/cowork_agent.py` | The service the panel talks to; owns the runtime and one conversation per document |
+| `ext/oxt-proto/components/cowork_client.py` | The panel's client for that service (plain Python, testable without a GUI) |
 | `dsh/libreoffice/cowork/cowork-office.mjs` | The document tools, as native harness rows |
 | `setup.sh` | Installer |
 | `PLAN.md` | Architecture, archived decisions, and the backlog |
