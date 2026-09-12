@@ -74,7 +74,12 @@ _STATUS_HEIGHT = 18
 # difference between "working" and "hung".
 _CLOCK_AFTER_MS = 15000
 _BUTTON_HEIGHT = 26
-_MIN_INNER_WIDTH = 80
+# The width the panel needs to be legible, not the width it can survive. This is
+# reported through XSidebarPanel.getMinimalWidth(), and the sidebar uses it to
+# decide how wide to open. Declaring 80 let the sidebar open at its own 92 px
+# minimum, which wrapped every line after two or three characters and made the
+# panel unreadable (seen in the sandbox capture).
+_MIN_INNER_WIDTH = 220
 _FALLBACK_WIDTH = 240
 
 # Per-document conversations, keyed by document URL. Module-level so they outlive

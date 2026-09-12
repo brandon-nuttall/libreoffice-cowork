@@ -993,3 +993,96 @@ Treat any claim about appearance in this project as unverified, and label it tha
 way. The evidence I can offer is real but narrow: control properties, geometry
 arithmetic, registration state, and deck activation. That is not the same as
 having looked at it.
+
+---
+
+# I CAN SEE IT — first real look at the panel
+
+The sandbox display works, and this is the first time any of this UI has been
+*looked at* rather than inferred. Three earlier bugs reached the user precisely
+because I could not do this.
+
+## F22 — What works, confirmed by eye
+
+- **`Cowork` appears in the menubar** — the Addons.xcu registration is correct.
+- **The deck registers, opens and activates**; `CoworkDeck active: True`.
+- **The panel renders in the sidebar.** The greeting is visible and reads
+  correctly: "Working on document.txt. I can read it, edit it, restructure it,
+  and check how the result looks — everything I change in one go is a single undo
+  step. Tell me what you want done."
+- **All six controls exist**: `txtTranscript`, `prgStatus`, `lblStatus`,
+  `txtComposer`, `btnSend`, `btnClear` — including the new progress row, so the
+  `UnoControlProgressBar` names were right.
+- **`Send` and `Clear` are laid out side by side** at the bottom, as intended.
+- **The panel takes the full height of the deck.** The status row is present.
+
+## F23 — The real defect: the sidebar is 92 px wide
+
+The panel log is unambiguous about the sequence of geometry passes:
+
+```
+layout:   parent=1285x900 container=1285x900 inner=1273 transcript_h=786
+relayout: parent=1285x900 container=1285x900 inner=1273 transcript_h=786
+layout:   parent=329x721  container=329x721  inner=317  transcript_h=607
+layout:   parent=92x720   container=92x720   inner=80   transcript_h=606
+```
+
+The panel starts wide, then the sidebar narrows it to **92 px**, so `inner`
+becomes 80 px. The layout code does exactly what it was written to do — it just
+has almost no width to work with, so every line wraps after two or three
+characters and the greeting becomes an unreadable column.
+
+**So the "controls do not fill the width" bug was real, and this is its true
+cause: the sidebar's own width, not my geometry.** The resize handling I added is
+working (note the `relayout` lines); it was faithfully re-laying-out into a
+92-pixel box.
+
+The 92 px is LibreOffice's minimum sidebar width, and a fresh profile has no
+stored width, so it opens at the minimum. Two things follow:
+
+1. My `getMinimalWidth()` returns 92 (`_MIN_INNER_WIDTH + 2*_MARGIN` = 80 + 12),
+   which is satisfied by a 92 px sidebar — so the panel reports itself as fitting
+   when it plainly does not. **`getMinimalWidth` should declare the width the
+   panel actually needs to be legible** (roughly 220–260 px), which gives the
+   sidebar a reason to open wider.
+2. The sidebar width is also persisted per user in
+   `org.openoffice.Office.UI.Sidebar`, so a fresh profile starts at the minimum
+   regardless.
+
+## F24 — Also visible, and not mine
+
+- **A large black rectangle** sits over the document area. The document renders
+  around it. This looks like an Xvfb rendering artefact rather than a panel
+  defect — the panel is entirely on the right and is unaffected. Worth
+  confirming on a real display before chasing.
+- **The status row shows no text and no bar animation** when idle, which is
+  correct: it is only populated while a turn runs. Whether it appears *during* a
+  turn is still unverified, because no agent was connected in this capture.
+
+## Passing the tests did not mean it looked right
+
+Every item above passed the programmatic checks: all controls built, the layout
+arithmetic was correct at every width, registration and activation succeeded. The
+panel was still unusable, because nothing in those checks knew that 80 pixels of
+inner width cannot hold a sentence.
+
+## F25 — The width fix works, confirmed by eye
+
+`_MIN_INNER_WIDTH` raised from 80 to 220, reported through
+`getMinimalWidth()`. The sidebar now opens wide enough that the greeting renders
+as three readable lines instead of a two-character column:
+
+```
+Cowork:
+Working on document.txt. I can read it, edit it, restructure it, and check
+how the result looks — everything I change in one go is a single undo step.
+Tell me what you want done.
+```
+
+`Send` and `Clear` sit side by side at the bottom; the deck header reads
+`Cowork`; the document renders beside it. The panel is usable for the first time.
+
+**The lesson, stated plainly:** `getMinimalWidth()` is not a formality. Returning
+a value the panel can technically survive at lets the sidebar open at its own
+minimum, and "technically survives" is not "legible". A panel should declare the
+width it needs to work.
