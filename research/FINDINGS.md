@@ -1121,3 +1121,39 @@ unit assertions in `tests/test-panel-wiring.py` (consume, deferred send, plain
 Enter untouched, no phantom send), and attachment is verified by the absence of
 the failure the code logs. **The keystroke itself has not been exercised; only its
 handler has.** Worth one manual Shift+Enter to close.
+
+## F27 — "why does the text always show up selected?"
+
+Because one line was doing two jobs and got one of them wrong:
+
+```python
+control.setSelection(Selection(0, len(body)))     # intended: scroll to the end
+```
+
+`Selection(0, n)` means **select everything from 0 to n**, so the whole
+conversation was permanently painted in the selection colour. The intent was a
+caret at the end, which is `Selection(n, n)` — a zero-width selection. One
+character wrong, and the panel looked broken in a way nobody would describe as a
+scrolling bug.
+
+Found by looking at a captured screenshot, which is the third defect this
+session that no assertion caught:
+
+| Defect | Found by |
+|---|---|
+| Transcript permanently selected | eye (sandbox capture) |
+| Sidebar squeezing the panel to 80 px | eye + the geometry log |
+| Greeting word-wrapped to two characters per line | eye |
+| Caption repeating "Cowork" three times | user |
+| Transcript rendering empty | user |
+
+## F28 — Also confirmed clean in the same capture
+
+The zoomed crop shows the panel rendering correctly end to end: the `Cowork:`
+label, the greeting wrapped across six readable lines, generous spacing between
+messages, an empty conversation area below, and the transcript scrollbar. Nothing
+is highlighted, clipped, or overlapping.
+
+The black rectangle seen in earlier captures is gone and was therefore an Xvfb
+repaint artefact rather than anything in the panel — worth remembering before
+chasing that class of thing.

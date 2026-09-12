@@ -657,9 +657,14 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         body = "\n\n".join(chunks)
         try:
             control.setText(body)
+            # Scroll to the newest message by placing a ZERO-WIDTH cursor at the
+            # end: `Selection(n, n)` is a caret, `Selection(0, n)` is "select
+            # everything" and paints the entire conversation in the selection
+            # colour. The transcript was permanently highlighted because of that
+            # one wrong first argument.
             try:
                 control.setSelection(
-                    uno.createUnoStruct("com.sun.star.awt.Selection", 0, len(body)))
+                    uno.createUnoStruct("com.sun.star.awt.Selection", len(body), len(body)))
             except Exception:
                 pass
         except Exception:
