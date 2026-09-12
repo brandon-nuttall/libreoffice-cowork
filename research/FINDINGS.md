@@ -1086,3 +1086,38 @@ Tell me what you want done.
 a value the panel can technically survive at lets the sidebar open at its own
 minimum, and "technically survives" is not "legible". A panel should declare the
 width it needs to work.
+
+## F26 — Shift+Enter sends; Enter still inserts a newline
+
+Requested after the multiline composer landed: "shift+enter needs to send the
+command".
+
+Implemented with `XKeyListener` on the composer. Two details that are easy to get
+wrong:
+
+1. **The event must be consumed, not merely observed.** If Shift+Enter were
+   allowed through, the control would append a newline and then the send would
+   fire, leaving a stray blank line in the composer. `keyPressed` calls
+   `event.Consume()` so the newline never happens.
+2. **The send happens in `keyReleased`, not `keyPressed`.** Sending on the press
+   would risk a second send if the release were also handled. The listener
+   records that it consumed a Shift+Enter and sends on the matching release, so a
+   release with no prior press cannot send at all.
+
+Plain Enter is left completely untouched, so the control inserts the newline
+itself and wrapping behaves like any other multiline field.
+
+`com.sun.star.awt.KeyModifier.SHIFT == 1`, `com.sun.star.awt.Key.RETURN == 1280`,
+both confirmed by reading the constants rather than assuming. `XKeyListener`
+declares both `keyPressed` and `keyReleased`; pyuno rejects the object if either
+is missing.
+
+### Verification boundary
+
+The control exposes only `addKeyListener`/`removeKeyListener` — there is no way to
+fire a key event through the UNO bridge, and `xdotool` is not installed, so no
+synthetic keystroke is possible. The listener logic is therefore covered by six
+unit assertions in `tests/test-panel-wiring.py` (consume, deferred send, plain
+Enter untouched, no phantom send), and attachment is verified by the absence of
+the failure the code logs. **The keystroke itself has not been exercised; only its
+handler has.** Worth one manual Shift+Enter to close.

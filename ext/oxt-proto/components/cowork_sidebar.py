@@ -39,7 +39,10 @@ import traceback
 import uno
 import unohelper
 
-from com.sun.star.awt import XActionListener, XCallback, XWindowListener, XTextListener
+from com.sun.star.awt import (XActionListener, XCallback, XKeyListener,
+                              XWindowListener, XTextListener)
+from com.sun.star.awt.Key import RETURN as KEY_RETURN
+from com.sun.star.awt.KeyModifier import SHIFT as MOD_SHIFT
 from com.sun.star.awt.PosSize import POSSIZE
 from com.sun.star.ui import XUIElementFactory, XUIElement, XToolPanel
 from com.sun.star.ui import XSidebarPanel
@@ -271,6 +274,57 @@ class _Ticker(unohelper.Base, XCallback):
             _log(traceback.format_exc())
 
 
+class _ComposerKeys(unohelper.Base, XKeyListener):
+    """Shift+Enter sends; Enter inserts a newline.
+
+    A multiline composer needs both, and the toolkit's own behaviour only gives
+    the newline. The split is deliberate:
+
+      * Shift+Enter is intercepted in `keyPressed`, the event is consumed, and
+        the send is issued in `keyReleased`.
+      * Plain Enter is left entirely alone, so the control inserts the newline
+        itself and wrap-and-continue behaves exactly as it does in any other
+        multi-line field.
+
+    Consuming rather than merely observing matters: if Shift+Enter were allowed
+    through, the control would append a newline and then the send would fire,
+    leaving the composer holding a stray blank line.
+
+    Requires `XDispatchProvider`-style completeness of the interface: XKeyListener
+    declares both `keyPressed` and `keyReleased`, and pyuno rejects the object if
+    either is missing.
+    """
+
+    def __init__(self, element):
+        self.element = element
+        # Set when Shift+Enter was consumed, so the matching keyReleased sends
+        # rather than being treated as an ordinary key-up.
+        self._pending_send = False
+
+    def keyPressed(self, event):
+        element = self.element
+        if element is None:
+            return
+        if event.KeyCode != KEY_RETURN:
+            return
+        modifiers = getattr(event, "Modifiers", 0) or 0
+        if not (modifiers & MOD_SHIFT):
+            return                      # plain Enter: let the control add a newline
+        self._pending_send = True
+        event.Consume()                 # stop the newline before it is inserted
+
+    def keyReleased(self, event):
+        element = self.element
+        if element is None or not self._pending_send:
+            return
+        self._pending_send = False
+        if event.KeyCode == KEY_RETURN:
+            element.submit()
+
+    def disposing(self, _event):
+        self.element = None
+
+
 class _MainThreadPump(unohelper.Base, XCallback):
     """Runs on the GUI thread; drains the worker's queue into the controls.
 
@@ -440,6 +494,13 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             listener = _PanelListener(self)
             composer.addTextListener(listener)
             self._listeners.append(listener)
+            key_listener = _ComposerKeys(self)
+            try:
+                composer.addKeyListener(key_listener)
+                self._listeners.append(key_listener)
+            except Exception:
+                _log("could not attach the key listener; Shift+Enter will not "
+                     "send:\n%s" % traceback.format_exc())
 
         listener = _PanelListener(self)
         for name, label in (("btnSend", "Send"), ("btnClear", "Clear")):

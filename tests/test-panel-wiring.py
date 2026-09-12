@@ -61,7 +61,10 @@ def install_uno_stubs():
            XActionListener=type("XActionListener", (), {}),
            XWindowListener=type("XWindowListener", (), {}),
            XTextListener=type("XTextListener", (), {}),
-           XCallback=type("XCallback", (), {}))
+           XCallback=type("XCallback", (), {}),
+           XKeyListener=type("XKeyListener", (), {}))
+    module("com.sun.star.awt.Key", RETURN=1280)
+    module("com.sun.star.awt.KeyModifier", SHIFT=1, MOD1=2)
     module("com.sun.star.awt.PosSize", POSSIZE=12)
     module("com.sun.star.ui",
            XUIElementFactory=type("XUIElementFactory", (), {}),
@@ -151,6 +154,11 @@ class FakeElement:
 
     def status_row(self):
         return self._status_text
+
+    submits = 0
+
+    def submit(self):
+        self.submits += 1
 
     def _set_busy(self, busy, label="Send"):
         self.busy = busy
@@ -311,6 +319,41 @@ def main():
           repr(threaded.seen_statuses()))
     check("the final text is applied",
           text.strip().endswith("answer"), repr(text))
+
+    print("\nShift+Enter sends, Enter adds a newline")
+    element = FakeElement("file:///tmp/report.odt")
+    keys = panel._ComposerKeys(element)
+
+    class KeyEvent:
+        def __init__(self, keycode, modifiers=0):
+            self.KeyCode = keycode
+            self.Modifiers = modifiers
+            self.consumed = False
+
+        def Consume(self):
+            self.consumed = True
+
+    RETURN, SHIFT = 1280, 1
+
+    press = KeyEvent(RETURN, SHIFT)
+    keys.keyPressed(press)
+    check("Shift+Enter consumes the newline rather than inserting it",
+          press.consumed)
+    check("it does not send until the key is released",
+          element.submits == 0, element.submits)
+    keys.keyReleased(KeyEvent(RETURN, SHIFT))
+    check("releasing Shift+Enter sends", element.submits == 1, element.submits)
+
+    plain = KeyEvent(RETURN, 0)
+    keys.keyPressed(plain)
+    check("plain Enter is left to the control, so it inserts a newline",
+          not plain.consumed)
+    keys.keyReleased(KeyEvent(RETURN, 0))
+    check("plain Enter does not send", element.submits == 1, element.submits)
+
+    keys.keyReleased(KeyEvent(RETURN, SHIFT))
+    check("a release with no prior press cannot send", element.submits == 1,
+          element.submits)
 
     print("\nhandling an unreachable service")
     element = run("unreachable", raises=panel.AgentUnavailable(
