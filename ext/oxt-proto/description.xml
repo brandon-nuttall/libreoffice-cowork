@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<description xmlns="http://openoffice.org/extensions/description/2006"
+             xmlns:d="http://openoffice.org/extensions/description/2006"
+             xmlns:xlink="http://www.w3.org/1999/xlink">
+  <identifier value="com.cowork.oxtproto"/>
+  <version value="0.0.1"/>
+  <display-name><name lang="en">Cowork Bridge Proto</name></display-name>
+  <publisher><name xlink:href="https://example.invalid">cowork</name></publisher>
+  <extension-description>
+    <src lang="en" xlink:href="description/desc.txt"/>
+  </extension-description>
+</description>

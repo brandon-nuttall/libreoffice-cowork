@@ -1,0 +1,39 @@
+MIT License
+
+Copyright (c) 2026 Brandon Nuttall
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+This project incorporates patterns and, in places, adapted code from other
+MIT-licensed projects, which are gratefully acknowledged:
+
+  * swe-sanad/LibreOffice-Claude-Connector (MIT)
+    The UNO named-pipe acceptor opened from inside the office process by a job
+    bound to OnStartApp, and the sidebar Deck/Panel/Factory registration
+    wiring. https://github.com/swe-sanad/LibreOffice-Claude-Connector
+
+  * dandi-91/LibreOffice-Bielik-Agent (MIT)
+    The frame-scoped live-document binding, per-turn undo grouping, and the
+    tracked-changes review mode.
+    https://github.com/dandi-91/LibreOffice-Bielik-Agent
+
+Their licence notices are reproduced above in spirit; consult each project for
+the exact terms of the specific code you reuse.

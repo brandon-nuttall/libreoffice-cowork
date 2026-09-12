@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Binds the bridge Job to the office's global start events, so a LibreOffice
+     the user opened NORMALLY still opens a local UNO pipe acceptor for agents.
+     No TCP, no port, no accept command line.
+
+     Shape verified against swe-sanad/LibreOffice-Claude-Connector (MIT), which
+     does exactly this in production. Two details that cost hours if missed:
+       * the event is spelled "OnStartApp" (capital O); "onStartApp" is wrong
+       * the JobList entry takes NO TimeStamp/UserTime wrapper
+     Both events are bound: onFirstVisibleTask never fires headless, while
+     OnStartApp covers that case. The Job itself is idempotent. -->
+<oor:component-data xmlns:oor="http://openoffice.org/2001/registry"
+                    xmlns:xs="http://www.w3.org/2001/XMLSchema"
+                    oor:name="Jobs"
+                    oor:package="org.openoffice.Office">
+  <node oor:name="Jobs">
+    <node oor:name="CoworkBridgeAcceptor" oor:op="replace">
+      <prop oor:name="Service" oor:type="xs:string">
+        <value>com.cowork.BridgeJob</value>
+      </prop>
+    </node>
+  </node>
+  <node oor:name="Events">
+    <node oor:name="OnStartApp" oor:op="fuse">
+      <node oor:name="JobList">
+        <node oor:name="CoworkBridgeAcceptor" oor:op="replace"/>
+      </node>
+    </node>
+    <node oor:name="onFirstVisibleTask" oor:op="fuse">
+      <node oor:name="JobList">
+        <node oor:name="CoworkBridgeAcceptor" oor:op="replace"/>
+      </node>
+    </node>
+  </node>
+</oor:component-data>

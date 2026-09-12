@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Maps the 'CoworkSidebar' token used in Sidebar.xcu's ImplementationURL to
+     the UNO component that builds the panel. <Name> and <FactoryImplementation>
+     must agree with Sidebar.xcu and cowork_sidebar.py respectively. -->
+<oor:component-data oor:name="Factories" oor:package="org.openoffice.Office.UI"
+    xmlns:oor="http://openoffice.org/2001/registry"
+    xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <node oor:name="Registered">
+    <node oor:name="UIElementFactories">
+      <node oor:name="com.cowork.SidebarFactoryReg" oor:op="replace">
+        <prop oor:name="Type"><value>toolpanel</value></prop>
+        <!-- Name MUST equal the middle segment of the panel's ImplementationURL -->
+        <prop oor:name="Name"><value>CoworkSidebar</value></prop>
+        <prop oor:name="Module"><value/></prop>
+        <!-- MUST equal IMPL_NAME registered in cowork_sidebar.py -->
+        <prop oor:name="FactoryImplementation">
+          <value>com.cowork.SidebarFactory</value>
+        </prop>
+      </node>
+    </node>
+  </node>
+</oor:component-data>

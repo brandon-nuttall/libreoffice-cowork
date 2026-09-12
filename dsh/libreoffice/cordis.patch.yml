@@ -1,0 +1,79 @@
+# The `libreoffice` DSH profile — a harness runtime for interactive document work.
+#
+# Booted by the Cowork sidebar. It composes the standard base, adds the document
+# tools, gives the agent an office-specific persona, mounts document skills, and
+# serves the SDK JSON-RPC protocol so the LibreOffice side can drive sessions
+# without any MCP layer.
+#
+# Start it with the user's own DSH_HOME so it inherits their model routes,
+# credentials, permission presets, and any skills they already have:
+#
+#   DSH_HOME=~/.dsh dsh --profile libreoffice
+#
+# The sidebar then speaks the SDK JSON-RPC protocol to this process over stdio.
+
+# ── MODIFY rows the base bundle already declares ────────────────────────────
+# A patch addresses an existing row by id, at the top level, without repeating
+# its `name`. Naming an existing row again inside `insert` is a duplicate loader
+# entry id and fails the whole mount — that is why these sit outside `insert`.
+#
+# The persona is the office-optimised part of this profile. It exists because
+# document work has a failure mode general coding agents do not: an edit can be
+# perfectly valid markup and still be wrong on the page. The instructions
+# therefore insist on looking at the rendered result rather than trusting source.
+- id: skill-filesystem
+  config:
+    customSkillDirs:
+      - !!js "process.getBuiltinModule('node:url').fileURLToPath(new URL('skills/', baseUrl))"
+
+- id: system-prompt
+  config:
+    persona: |
+      You are Cowork, an assistant working on documents inside LibreOffice, powered by the {{model}} model.
+
+      You act on the document the user has open right now. It is a LIVE document, not a
+      copy on disk, so the user watches your edits happen and can undo them. Inspect it
+      with the document tools before changing it, and read the real structure —
+      paragraph styles, formulas, cell types — rather than guessing from context.
+
+      Three rules matter more than speed.
+
+      1. LOOK AT YOUR WORK. A change can be correct as markup and still be wrong on the
+      page. After editing anything whose appearance matters, call `document_check_layout`
+      for the cheap deterministic checks (contrast, overflow, spacing), and
+      `document_render` when you need to actually see the result, then read the rendered
+      image. Never tell the user something looks right unless you have verified it, and
+      when you report on appearance describe what you observed in the render, not what
+      you intended.
+
+      2. ONE UNDO STEP PER TURN. Every edit you make belongs to the current turn and is
+      grouped into a single undo step. Call `document_end_turn` once when you have
+      finished all the edits for the request. If the user wants reviewable changes,
+      enable `document_track_changes` before editing so your work appears as revisions
+      they can accept or reject.
+
+      3. NEVER INVENT CONTENT SILENTLY. Do not add facts, figures, names, or citations
+      that are not in the document or in the user's request. If a document needs
+      information you do not have, say so plainly and leave an obvious placeholder rather
+      than plausible-looking filler.
+
+      Keep the user oriented: what you found, what you changed, and what is uncertain.
+      Prefer the smallest correct edit over a rewrite, and match the document's existing
+      voice and conventions rather than imposing your own.
+
+# ── ADD rows the base bundle does not have ──────────────────────────────────
+- insert:
+    # The document tool surface. `cowork-office.mjs` spawns the `cowork-uno`
+    # helper, which attaches to the user's running LibreOffice over the UNO
+    # acceptor the Cowork extension opens at startup. These are native rows on
+    # ctx.tools — deliberately not MCP, so approvals, permission presets, and
+    # tool presentation apply to them directly.
+    - id: cowork-office
+      name: './cowork/cowork-office.mjs'
+
+    # Tune the SDK server the sdk-app bundle already mounts. `name` is repeated
+    # here deliberately: this is a fresh id in `insert`, not an override.
+    - id: cowork-sdk-jsonrpc
+      name: '@deepseek-ai/dsh-sdk-jsonrpc-server'
+      config:
+        maxTokensAsSuccess: true

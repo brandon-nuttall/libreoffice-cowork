@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE manifest:manifest PUBLIC "-//OpenOffice.org//DTD Manifest 1.0//EN" "Manifest.dtd">
+<manifest:manifest xmlns:manifest="http://openoffice.org/2001/manifest">
+  <manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.sun.star.package-bundle"/>
+  <manifest:file-entry manifest:full-path="components/cowork_bridge.py" manifest:media-type="application/vnd.sun.star.uno-component;type=Python"/>
+  <manifest:file-entry manifest:full-path="components/cowork_job.py" manifest:media-type="application/vnd.sun.star.uno-component;type=Python"/>
+  <manifest:file-entry manifest:full-path="components/cowork_sidebar.py" manifest:media-type="application/vnd.sun.star.uno-component;type=Python"/>
+  <manifest:file-entry manifest:full-path="registry/Jobs.xcu" manifest:media-type="application/vnd.sun.star.configuration-data"/>
+  <manifest:file-entry manifest:full-path="registry/org/openoffice/Office/UI/Sidebar.xcu" manifest:media-type="application/vnd.sun.star.configuration-data"/>
+  <manifest:file-entry manifest:full-path="registry/org/openoffice/Office/UI/Factories.xcu" manifest:media-type="application/vnd.sun.star.configuration-data"/>
+</manifest:manifest>

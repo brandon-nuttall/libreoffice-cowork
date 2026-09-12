@@ -1,0 +1,31 @@
+# ── test scaffolding — never commit these ───────────────────────────────────
+# Throwaway DSH homes and LibreOffice profiles used while developing. They can
+# contain copies of the user's settings and credentials, so they are ignored by
+# PATTERN rather than by exact name: a new one created while testing is covered
+# automatically instead of waiting for someone to remember.
+.dsh-sdk/
+*-testdsh/
+*-testhome/
+.setuptest*/
+research/poc/
+
+# ── research scratch ────────────────────────────────────────────────────────
+# Downloaded pages, screenshots, and extracted third-party reference files.
+# Deliberately kept out of the repository: some of it is other projects' code.
+.research-scratch/
+
+# ── build output ────────────────────────────────────────────────────────────
+*.oxt
+*.log
+
+# ── python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ── editors and OS ──────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+.DS_Store
