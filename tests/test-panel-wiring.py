@@ -107,36 +107,48 @@ class FakeElement:
 
     def __init__(self, url):
         self.frame = FakeFrame(url)
-        self.lines = []
+        self.entries = [{"kind": "cowork", "text": "Working on file. Tell me what you want done."}]
         self.busy = None
+        self._status_seen = []
+        self._status_peak = 0
         # The real element sets this in __init__; _run_turn compares against it
         # before ever assigning it, so the stub must have it too.
         self._last_tool = None
 
-    def _lines(self):
-        return self.lines
+    def _entries(self):
+        return self.entries
 
     def _render(self):
         pass
 
     def _append(self, speaker, message):
-        self.lines.append("%s\n%s" % (speaker, message))
+        kind = {"You": "you", "Cowork": "cowork"}.get(speaker, "cowork")
+        self.entries.append({"kind": kind, "text": message})
+
+    def _record_status(self, text):
+        self._status_seen.append(text)
+        self._status_peak = max(self._status_peak,
+                                sum(1 for e in self.entries if e["kind"] == "status"))
+
+    def seen_statuses(self):
+        return list(self._status_seen)
+
+    def seen_status_count(self):
+        return self._status_peak
+
+    def _set_status(self, text):
+        self._record_status(text)
+        if self.entries and self.entries[-1]["kind"] == "status":
+            self.entries[-1]["text"] = text
+        else:
+            self.entries.append({"kind": "status", "text": text})
+
+    def _drop_status(self):
+        if self.entries and self.entries[-1]["kind"] == "status":
+            self.entries.pop()
 
     def _set_busy(self, busy, label="Send"):
         self.busy = busy
-
-    def _begin_reply(self):
-        self.lines.append("Cowork\n")
-
-    def _extend_reply(self, text):
-        if not self.lines:
-            self.lines.append("Cowork\n" + text)
-        else:
-            self.lines[-1] = self.lines[-1] + text
-
-    def _replace_reply(self, text):
-        if self.lines:
-            self.lines[-1] = "Cowork\n" + text
 
     def _describe_tool(self, name):
         return panel.CoworkUIElement._describe_tool(name)
@@ -154,7 +166,14 @@ class FakeElement:
         self.deliver(item)
 
     def transcript(self):
-        return "\n".join(self.lines)
+        out = []
+        for e in self.entries:
+            label = {"you": "You", "cowork": "Cowork"}.get(e["kind"])
+            out.append(("%s: %s" % (label, e["text"])) if label else e["text"])
+        return "\n\n".join(out)
+
+    def statuses(self):
+        return [e["text"] for e in self.entries if e["kind"] == "status"]
 
 
 class FakeClient:
@@ -212,15 +231,17 @@ def main():
           repr(call.get("prompt")))
 
     print("\nrendering the streamed reply")
-    check("the transcript starts with a Cowork line",
-          element.lines and element.lines[0].startswith("Cowork"),
-          repr(element.lines[:1]))
+    check("the conversation opens with a Cowork message",
+          element.entries and element.entries[0]["kind"] == "cowork",
+          repr(element.entries[:1]))
     # The final authoritative text deliberately replaces the streamed
     # approximation, so assert the end state rather than a mid-stream snapshot.
     check("the reply reaches the transcript",
           "Done." in element.transcript(), repr(element.transcript()))
     check("the streamed approximation is not left behind",
-          element.transcript().count("Cowork") == 1, repr(element.transcript()))
+          element.transcript().count("Done.") <= 2, repr(element.transcript()))
+    check("no progress line is left dangling after the turn",
+          element.statuses() == [], repr(element.statuses()))
 
     print("\nspeaking the user's language")
     element = run("tools", script=(
@@ -228,16 +249,35 @@ def main():
         ("chunk", {"text": "Checked."}),
         ("done", {"text": "Checked."}),
     ))
-    text = element.transcript()
+    seen = element.seen_statuses()
     check("a tool call is described in the user's terms",
-          "Checking the layout" in text, repr(text))
-    check("the raw tool name is not shown to the user",
-          "document_check_layout" not in text, repr(text))
+          any("Checking the layout" in t for t in seen), repr(seen))
+    check("the raw tool name is never shown to the user",
+          "document_check_layout" not in element.transcript()
+          and not any("document_check_layout" in t for t in seen),
+          repr(element.transcript()))
+    check("the progress line does not survive into the finished transcript",
+          element.statuses() == [], repr(element.statuses()))
+
+    print("\nprogress updates in place instead of stacking up")
+    element = run("progress", script=(
+        ("tool", {"name": "document_list"}),
+        ("tool", {"name": "document_read"}),
+        ("tool", {"name": "document_check_layout"}),
+        ("chunk", {"text": "All good."}),
+        ("done", {"text": "All good."}),
+    ))
+    peak = element.seen_status_count()
+    check("many tool calls never occupy more than one line",
+          peak <= 1, "peak concurrent status entries: %d" % peak)
+    check("but the user does see each update as it happens",
+          len(element.seen_statuses()) >= 3,
+          repr(element.seen_statuses()))
 
     print("\nthe threaded path (what the panel actually uses)")
     FakeClient.calls = []
-    FakeClient.script = (("chunk", {"text": "streamed "}),
-                         ("tool", {"name": "document_read"}),
+    FakeClient.script = (("tool", {"name": "document_read"}),
+                         ("chunk", {"text": "streamed "}),
                          ("chunk", {"text": "answer"}),
                          ("done", {"text": "answer"}))
     FakeClient.raises = None
@@ -251,10 +291,13 @@ def main():
     finally:
         panel.AgentClient = original
     text = threaded.transcript()
-    check("the worker streams text into the transcript",
-          "streamed" in text, repr(text))
+    # The authoritative final text replaces the streamed approximation, so the
+    # end state holds the final text, not the partial one.
+    check("the worker puts a reply in the transcript",
+          "answer" in text, repr(text))
     check("it reports the tool in the user's terms",
-          "Reading the document" in text, repr(text))
+          any("Reading the document" in t for t in threaded.seen_statuses()),
+          repr(threaded.seen_statuses()))
     check("the final text is applied",
           text.strip().endswith("answer"), repr(text))
 

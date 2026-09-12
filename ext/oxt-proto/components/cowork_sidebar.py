@@ -67,7 +67,7 @@ _PANEL_PREFERRED_HEIGHT = 420
 _PANEL_MIN_HEIGHT = 200
 _MARGIN = 6
 _GAP = 4
-_COMPOSER_HEIGHT = 30
+_COMPOSER_HEIGHT = 46
 _BUTTON_HEIGHT = 26
 _MIN_INNER_WIDTH = 80
 _FALLBACK_WIDTH = 240
@@ -280,10 +280,19 @@ class CoworkToolPanel(unohelper.Base, XToolPanel, XSidebarPanel):
 
     # XSidebarPanel — the sidebar sizes the panel from this answer.
     def getHeightForWidth(self, _width):
+        """Tell the sidebar how tall this panel can be.
+
+        Maximum matters: a panel that caps it at its preferred height gets a
+        fixed strip and leaves the rest of the deck empty, which is what made the
+        conversation occupy the top third of a tall sidebar. The panel has no
+        intrinsic height — it is a conversation, and a conversation wants whatever
+        room there is — so the maximum is effectively unbounded and the preferred
+        is only a hint for the first layout pass.
+        """
         size = uno.createUnoStruct("com.sun.star.ui.LayoutSize")
         size.Minimum = _PANEL_MIN_HEIGHT
         size.Preferred = max(self._height, _PANEL_PREFERRED_HEIGHT)
-        size.Maximum = max(self._height, _PANEL_PREFERRED_HEIGHT)
+        size.Maximum = 32767
         return size
 
     def getMinimalWidth(self):
@@ -373,11 +382,17 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                       HideInactiveSelection=False,
                       Tabstop=True)
 
+        # MultiLine + no horizontal scroll: a single-line field scrolls the text
+        # sideways as you type, so anything longer than the box width is
+        # invisible. Wrapping keeps the whole message readable.
         self._control(container, "txtComposer", "UnoControlEdit",
                       "UnoControlEditModel",
-                      MultiLine=False,
+                      MultiLine=True,
                       Border=True,
-                      VScroll=False)
+                      VScroll=True,
+                      AutoVScroll=True,
+                      HScroll=False,
+                      AutoHScroll=False)
 
         composer = self._controls.get("txtComposer")
         if composer is not None:
@@ -412,7 +427,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         # panel never opens blank.
         key = _doc_key(self.frame)
         if key not in _TRANSCRIPTS:
-            _TRANSCRIPTS[key] = [_greeting(self.frame)]
+            _TRANSCRIPTS[key] = [{"kind": "cowork", "text": _greeting(self.frame)}]
         self._render()
 
         self._resize_listener = _RelayoutListener(self)
@@ -440,11 +455,13 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             csize = container.getPosSize()
             width = csize.Width if csize.Width > 0 else psize.Width
             height = csize.Height if csize.Height > 0 else psize.Height
+            resized = False
             if psize.Width > 0 and psize.Height > 0:
                 if csize.Width != psize.Width or csize.Height != psize.Height:
                     container.setPosSize(0, 0, psize.Width, psize.Height, POSSIZE)
                     csize = container.getPosSize()
                     width, height = csize.Width, csize.Height
+                    resized = True
             if width <= 0:
                 width = _FALLBACK_WIDTH
             if height <= 60:
@@ -463,8 +480,9 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             self._place("btnSend", _MARGIN, buttons_y, half, _BUTTON_HEIGHT)
             self._place("btnClear", _MARGIN + half + _GAP, buttons_y,
                         inner - half - _GAP, _BUTTON_HEIGHT)
-            _log("layout: parent=%dx%d inner=%d transcript_h=%d"
-                 % (psize.Width, psize.Height, inner, transcript_h))
+            _log("%slayout: parent=%dx%d container=%dx%d inner=%d transcript_h=%d"
+                 % ("re" if resized else "", psize.Width, psize.Height,
+                    width, height, inner, transcript_h))
         except Exception:
             _log(traceback.format_exc())
 
@@ -499,35 +517,83 @@ class CoworkUIElement(unohelper.Base, XUIElement):
 
     # -- conversation rendering ---------------------------------------- //
 
-    def _lines(self):
-        return _TRANSCRIPTS.setdefault(_doc_key(self.frame), [])
+    def _entries(self):
+        """The conversation, as [{kind, text}] — one entry per message.
+
+        Kept structured rather than as flat lines so the renderer can lay out a
+        conversation instead of a wall of text, and so a progress line can be
+        replaced in place rather than appended.
+        """
+        return _TRANSCRIPTS.setdefault(
+            _doc_key(self.frame),
+            [{"kind": "cowork", "text": _greeting(self.frame)}])
 
     def _render(self):
-        """Redraw the transcript, scrolled to the newest line."""
-        control = self._controls.get("txtTranscript")
+        """Redraw the conversation, scrolled to the newest message."""
+        control = self._control_by_name("txtTranscript")
         if control is None:
             return
-        text = "\n\n".join(self._lines())
+        chunks = []
+        for entry in self._entries():
+            kind, text = entry["kind"], entry["text"]
+            if kind == "you":
+                chunks.append("You:\n%s" % text)
+            elif kind == "cowork":
+                chunks.append("Cowork:\n%s" % text)
+            elif kind == "status":
+                # Labelled like a turn so it does not read as stray text, but
+                # marked as provisional.
+                chunks.append("Cowork: %s" % text)
+            else:
+                chunks.append(text)
+        body = "\n\n".join(chunks)
         try:
-            control.setText(text)
-            # Keep the end in view, the way a chat window does.
+            control.setText(body)
             try:
-                control.setSelection(uno.createUnoStruct("com.sun.star.awt.Selection",
-                                                         0, len(text)))
+                control.setSelection(
+                    uno.createUnoStruct("com.sun.star.awt.Selection", 0, len(body)))
             except Exception:
                 pass
         except Exception:
             _log("setText failed:\n%s" % traceback.format_exc())
 
     def _append(self, speaker, message):
-        lines = self._lines()
-        lines.append("%s\n%s" % (speaker, message))
-        # Keep the store bounded so a long session cannot grow without limit.
-        if len(lines) > 120:
-            del lines[:-120]
+        kind = {"You": "you", "Cowork": "cowork"}.get(speaker, "cowork")
+        entries = self._entries()
+        entries.append({"kind": kind, "text": message})
+        if len(entries) > 200:
+            del entries[:-200]
         self._render()
 
+    def _set_status(self, text):
+        """Show progress as ONE line that updates itself.
+
+        Interim updates ("Reading the document…", "Checking the layout…") are
+        evidence that work is happening, not conversation. Appending them fills
+        the pane with noise and buries the actual exchange, so a status occupies
+        a single entry that each new status overwrites and that the first real
+        output removes.
+        """
+        entries = self._entries()
+        if entries and entries[-1]["kind"] == "status":
+            entries[-1]["text"] = text
+        else:
+            entries.append({"kind": "status", "text": text})
+        self._render()
+
+    def _drop_status(self):
+        entries = self._entries()
+        if entries and entries[-1]["kind"] == "status":
+            entries.pop()
+            self._render()
+
     def _set_busy(self, busy, label="Send"):
+        """Reflect that a turn is running.
+
+        A spinner is not available in this toolkit, so the Send button becomes
+        the indicator: a slow turn with no visible change is indistinguishable
+        from a frozen application.
+        """
         """Reflect that a turn is running.
 
         The button label is the only affordance this panel has for 'working';
@@ -538,7 +604,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         if button is None:
             return
         try:
-            button.getModel().Label = "…" if busy else label
+            button.getModel().Label = "Working…" if busy else label
             button.getModel().Enabled = not busy
         except Exception:
             _log(traceback.format_exc())
@@ -598,32 +664,45 @@ class CoworkUIElement(unohelper.Base, XUIElement):
     # -- applying worker output (GUI thread only) ----------------------- //
 
     def deliver(self, item):
+        """Apply one worker event. Runs on the GUI thread only."""
         kind = item[0]
         _log("delivering %r on %s" % (kind, threading.current_thread().name))
         if kind == "chunk":
             piece = item[1]
-            if piece:
-                if not self._streaming:
-                    self._streaming = True
-                    self._begin_reply()
-                self._extend_reply(piece)
-        elif kind == "reset":
-            # A tool call interrupts the prose; the next text starts a new line.
-            self._streaming = False
+            if not piece:
+                return
+            if not self._streaming:
+                # First real output of a reply: the progress line has done its
+                # job and makes way for the answer.
+                self._drop_status()
+                self._streaming = True
+                self._entries().append({"kind": "cowork", "text": ""})
+                self._render()
+            self._entries()[-1]["text"] += piece
+            self._render()
         elif kind == "tool":
+            # A tool call interrupts the prose and reports progress in place.
             name = item[1]
-            if name != self._last_tool:
-                self._last_tool = name
-                self._append("Cowork", self._describe_tool(name))
-                self._streaming = False
+            self._streaming = False
+            self._last_tool = name
+            self._set_status(self._describe_tool(name))
         elif kind == "final":
-            if item[1] and self._streaming:
-                self._replace_reply(item[1])
-            elif item[1]:
-                self._append("Cowork", item[1])
+            self._drop_status()
+            text = item[1]
+            if not text:
+                pass
+            elif self._streaming:
+                self._entries()[-1]["text"] = text
+                self._render()
+            else:
+                self._append("Cowork", text)
+            self._streaming = False
         elif kind == "error":
+            self._drop_status()
             self._append("Cowork", item[1])
+            self._streaming = False
         elif kind == "done":
+            self._drop_status()
             self._streaming = False
             self._set_busy(False)
 
@@ -651,7 +730,8 @@ class CoworkUIElement(unohelper.Base, XUIElement):
 
     def clear(self):
         """Start a fresh thread for this document."""
-        _TRANSCRIPTS[_doc_key(self.frame)] = [_greeting(self.frame)]
+        _TRANSCRIPTS[_doc_key(self.frame)] = [
+            {"kind": "cowork", "text": _greeting(self.frame)}]
         self._render()
 
     @staticmethod
