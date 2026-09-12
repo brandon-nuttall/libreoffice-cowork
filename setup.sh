@@ -208,18 +208,36 @@ find_dsh() {
 # installed profile needs a node_modules that can resolve them.
 DSH_INSTALL_ROOT=""
 find_dsh_install_root() {
-  local bin="$DSH_BIN"
-  local dir
-  dir="$(cd "$(dirname "$bin")/.." && pwd)"      # .../@deepseek-ai/dsh
-  local root
-  root="$(cd "$dir/../.." && pwd)"               # .../node_modules
+  # Resolve symlinks first: an npm `.bin/dsh` is a symlink, so walking up from
+  # the link's own directory two levels lands in the wrong place (it found
+  # ~/.npm/_npx, which holds no packages).
+  local real dir root
+  real="$(readlink -f "$DSH_BIN" 2>/dev/null || echo "$DSH_BIN")"
+  dir="$(dirname "$real")"                 # .../@deepseek-ai/dsh/lib
+  dir="$(dirname "$dir")"                  # .../@deepseek-ai/dsh
+  root="$(dirname "$(dirname "$dir")")"    # .../node_modules
   if [ -d "$root/@deepseek-ai/dsh-base" ]; then
     DSH_INSTALL_ROOT="$root"
-    return
+    return 0
   fi
-  # Fall back to wherever dsh-base actually lives.
-  dir="$(dirname "$(find "$root" -maxdepth 3 -type d -name dsh-base 2>/dev/null | head -1)")"
-  [ -d "$dir/dsh-base" ] && DSH_INSTALL_ROOT="$dir"
+  # Fall back to searching upwards for wherever dsh-base actually lives.
+  local probe="$dir"
+  while [ "$probe" != "/" ]; do
+    if [ -d "$probe/node_modules/@deepseek-ai/dsh-base" ]; then
+      DSH_INSTALL_ROOT="$probe/node_modules"
+      return 0
+    fi
+    if [ -d "$probe/@deepseek-ai/dsh-base" ]; then
+      DSH_INSTALL_ROOT="$probe"
+      return 0
+    fi
+    probe="$(dirname "$probe")"
+  done
+  DSH_INSTALL_ROOT=""
+  # NOT a failure: the caller warns and continues. Returning non-zero here would
+  # make `set -e` abort the whole install at this point, which is exactly what
+  # happened — the profile had been copied, then the script died silently.
+  return 0
 }
 
 # ── install ─────────────────────────────────────────────────────────────────
@@ -289,7 +307,17 @@ install_oxt() {
   unopkg_retry() {
     local attempt out
     for attempt in 1 2 3; do
-      out="$("$UNOPKG" "${LO_ARGS[@]:-}" "$@" 2>&1)" && { printf '%s' "$out"; return 0; }
+      # `"${LO_ARGS[@]:-}"` expands to ONE EMPTY ARGUMENT when the array is
+      # empty, which unopkg reads as a sub-command name:
+      #   "Unknown sub-command: ''"
+      # That only happens when no profile override is set, i.e. the normal case.
+      # Branch instead of relying on a default expansion.
+      if [ "${#LO_ARGS[@]}" -gt 0 ]; then
+        out="$("$UNOPKG" "${LO_ARGS[@]}" "$@" 2>&1)"
+      else
+        out="$("$UNOPKG" "$@" 2>&1)"
+      fi
+      if [ $? -eq 0 ]; then printf '%s' "$out"; return 0; fi
       case "$out" in
         *"lock file"*)
           if [ -n "${COWORK_LO_PROFILE:-}" ] && ! pgrep -x unopkg >/dev/null 2>&1; then
