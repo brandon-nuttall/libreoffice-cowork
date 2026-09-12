@@ -7,6 +7,9 @@
 *-testdsh/
 *-testhome/
 .setuptest*/
+.curltest*/
+.curltest-real/
+.neutral/
 research/poc/
 
 # ── research scratch ────────────────────────────────────────────────────────
