@@ -110,7 +110,8 @@ class FakeElement:
         self.entries = [{"kind": "cowork", "text": "Working on file. Tell me what you want done."}]
         self.busy = None
         self._status_seen = []
-        self._status_peak = 0
+        self._status_text = ""
+        self._turn_started = 0.0
         # The real element sets this in __init__; _run_turn compares against it
         # before ever assigning it, so the stub must have it too.
         self._last_tool = None
@@ -125,27 +126,31 @@ class FakeElement:
         kind = {"You": "you", "Cowork": "cowork"}.get(speaker, "cowork")
         self.entries.append({"kind": kind, "text": message})
 
-    def _record_status(self, text):
+    # The progress row: a label and a clock, never part of the transcript.
+    def _set_status(self, text):
+        self._status_text = text
         self._status_seen.append(text)
-        self._status_peak = max(self._status_peak,
-                                sum(1 for e in self.entries if e["kind"] == "status"))
+
+    def _drop_status(self):
+        self._status_text = ""
+
+    def _refresh_status_row(self):
+        pass
+
+    def _start_ticker(self):
+        self._turn_started = __import__("time").time()
+
+    def _stop_ticker(self):
+        self._turn_started = 0.0
 
     def seen_statuses(self):
         return list(self._status_seen)
 
     def seen_status_count(self):
-        return self._status_peak
+        return 1 if self._status_text else 0
 
-    def _set_status(self, text):
-        self._record_status(text)
-        if self.entries and self.entries[-1]["kind"] == "status":
-            self.entries[-1]["text"] = text
-        else:
-            self.entries.append({"kind": "status", "text": text})
-
-    def _drop_status(self):
-        if self.entries and self.entries[-1]["kind"] == "status":
-            self.entries.pop()
+    def status_row(self):
+        return self._status_text
 
     def _set_busy(self, busy, label="Send"):
         self.busy = busy
@@ -173,6 +178,7 @@ class FakeElement:
         return "\n\n".join(out)
 
     def statuses(self):
+        # Progress lives in its own row, so the transcript should contain none.
         return [e["text"] for e in self.entries if e["kind"] == "status"]
 
 
@@ -256,8 +262,10 @@ def main():
           "document_check_layout" not in element.transcript()
           and not any("document_check_layout" in t for t in seen),
           repr(element.transcript()))
-    check("the progress line does not survive into the finished transcript",
+    check("progress never enters the transcript",
           element.statuses() == [], repr(element.statuses()))
+    check("the progress row is cleared when the turn ends",
+          element.status_row() == "", repr(element.status_row()))
 
     print("\nprogress updates in place instead of stacking up")
     element = run("progress", script=(
@@ -267,12 +275,15 @@ def main():
         ("chunk", {"text": "All good."}),
         ("done", {"text": "All good."}),
     ))
-    peak = element.seen_status_count()
-    check("many tool calls never occupy more than one line",
-          peak <= 1, "peak concurrent status entries: %d" % peak)
+    check("many tool calls never occupy more than one row",
+          element.seen_status_count() <= 1,
+          "concurrent status rows: %d" % element.seen_status_count())
     check("but the user does see each update as it happens",
           len(element.seen_statuses()) >= 3,
           repr(element.seen_statuses()))
+    check("the last update is the one left on screen",
+          "check" in (element.seen_statuses() or [""])[-1].lower(),
+          repr(element.seen_statuses()[-1:]))
 
     print("\nthe threaded path (what the panel actually uses)")
     FakeClient.calls = []

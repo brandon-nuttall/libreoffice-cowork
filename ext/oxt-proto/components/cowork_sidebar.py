@@ -68,6 +68,11 @@ _PANEL_MIN_HEIGHT = 200
 _MARGIN = 6
 _GAP = 4
 _COMPOSER_HEIGHT = 46
+_STATUS_HEIGHT = 18
+# Show the elapsed clock only after this long, matching the DSH progress chrome:
+# a count-up on a two-second call is noise, on a thirty-second one it is the
+# difference between "working" and "hung".
+_CLOCK_AFTER_MS = 15000
 _BUTTON_HEIGHT = 26
 _MIN_INNER_WIDTH = 80
 _FALLBACK_WIDTH = 240
@@ -245,6 +250,22 @@ def _turn_worker(element, prompt):
         element.post_from_worker(("done", None))
 
 
+class _Ticker(unohelper.Base, XCallback):
+    """Re-renders the progress row once a second, on the GUI thread."""
+
+    def __init__(self, element):
+        self.element = element
+
+    def notify(self, _data):
+        element = self.element
+        if element is None:
+            return
+        try:
+            element._refresh_status_row()
+        except Exception:
+            _log(traceback.format_exc())
+
+
 class _MainThreadPump(unohelper.Base, XCallback):
     """Runs on the GUI thread; drains the worker's queue into the controls.
 
@@ -317,6 +338,10 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         self._closing = False
         # True while a reply is being streamed into the last transcript line.
         self._streaming = False
+        # Progress row state.
+        self._status_text = ""
+        self._turn_started = 0.0
+        self._ticker = None
         # AsyncCallback + its callback object must both outlive every turn.
         self._async = None
         self._pump = None
@@ -385,6 +410,17 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         # MultiLine + no horizontal scroll: a single-line field scrolls the text
         # sideways as you type, so anything longer than the box width is
         # invisible. Wrapping keeps the whole message readable.
+        # Progress row: an indeterminate bar (the toolkit animates it for us, so
+        # there is visible motion with no timer at all), a label naming what is
+        # happening, and a count-up clock.
+        self._control(container, "prgStatus", "UnoControlProgressBar",
+                      "UnoControlProgressBarModel",
+                      ProgressValue=0, ProgressValueMin=0, ProgressValueMax=100)
+
+        self._control(container, "lblStatus", "UnoControlFixedText",
+                      "UnoControlFixedTextModel",
+                      Label="", MultiLine=False, Align=0)
+
         self._control(container, "txtComposer", "UnoControlEdit",
                       "UnoControlEditModel",
                       MultiLine=True,
@@ -471,10 +507,16 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             # Bottom stack is fixed; the conversation takes everything left.
             buttons_y = height - _MARGIN - _BUTTON_HEIGHT
             composer_y = buttons_y - _GAP - _COMPOSER_HEIGHT
+            status_y = composer_y - _GAP - _STATUS_HEIGHT
             transcript_y = _MARGIN
-            transcript_h = max(composer_y - _GAP - transcript_y, 60)
+            transcript_h = max(status_y - _GAP - transcript_y, 60)
 
             self._place("txtTranscript", _MARGIN, transcript_y, inner, transcript_h)
+            # Bar on the left, label filling the rest of the row.
+            bar_w = min(90, max(inner // 4, 40))
+            self._place("prgStatus", _MARGIN, status_y + 4, bar_w, _STATUS_HEIGHT - 8)
+            self._place("lblStatus", _MARGIN + bar_w + _GAP, status_y,
+                        max(inner - bar_w - _GAP, 20), _STATUS_HEIGHT)
             self._place("txtComposer", _MARGIN, composer_y, inner, _COMPOSER_HEIGHT)
             half = max((inner - _GAP) // 2, 30)
             self._place("btnSend", _MARGIN, buttons_y, half, _BUTTON_HEIGHT)
@@ -565,27 +607,95 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             del entries[:-200]
         self._render()
 
-    def _set_status(self, text):
-        """Show progress as ONE line that updates itself.
+    # -- the progress row ---------------------------------------------- //
 
-        Interim updates ("Reading the document…", "Checking the layout…") are
-        evidence that work is happening, not conversation. Appending them fills
-        the pane with noise and buries the actual exchange, so a status occupies
-        a single entry that each new status overwrites and that the first real
-        output removes.
+    def _spinner_value(self):
+        """A slowly advancing fraction of the bar.
+
+        The bar is deliberately NOT a percentage: nobody knows how far through a
+        model turn is, and a bar that sits at 70% for a minute is worse than no
+        bar. A slow crawl reads as "alive" without promising a finish time.
         """
-        entries = self._entries()
-        if entries and entries[-1]["kind"] == "status":
-            entries[-1]["text"] = text
-        else:
-            entries.append({"kind": "status", "text": text})
-        self._render()
+        if not self._turn_started:
+            return 30
+        elapsed = time.time() - self._turn_started
+        return int(15 + (elapsed * 3) % 70)
+
+    def _status_label(self):
+        """`Deep diving... 18s` — the label plus a clock, as DSH shows it."""
+        text = self._status_text or "Working…"
+        if self._turn_started:
+            seconds = int(time.time() - self._turn_started)
+            if seconds * 1000 >= _CLOCK_AFTER_MS:
+                if seconds < 60:
+                    text = "%s  %ds" % (text, seconds)
+                else:
+                    text = "%s  %d:%02d" % (text, seconds // 60, seconds % 60)
+        return text
+
+    def _refresh_status_row(self):
+        label = self._control_by_name("lblStatus")
+        bar = self._control_by_name("prgStatus")
+        if label is not None:
+            try:
+                label.setText(self._status_label())
+            except Exception:
+                _log(traceback.format_exc())
+        if bar is not None:
+            try:
+                bar.getModel().ProgressValue = self._spinner_value() if self._busy else 0
+            except Exception:
+                _log(traceback.format_exc())
+
+    def _set_status(self, text):
+        """Show what is happening in the progress row.
+
+        Interim updates are evidence that work is happening, not conversation.
+        They go in the progress row rather than the transcript, so the exchange
+        is never buried under a list of "Reading…", "Checking…", "Running…".
+        """
+        self._status_text = text
+        self._refresh_status_row()
 
     def _drop_status(self):
-        entries = self._entries()
-        if entries and entries[-1]["kind"] == "status":
-            entries.pop()
-            self._render()
+        """Clear the progress row; the turn has produced real output."""
+        self._status_text = ""
+        self._refresh_status_row()
+
+    # -- the ticker ---------------------------------------------------- //
+
+    def _start_ticker(self):
+        """Begin the elapsed clock, if the toolkit offers a timer.
+
+        Without one the clock never appears, but the animated progress bar still
+        shows motion, so the panel is never silent about being busy.
+        """
+        self._stop_ticker()
+        self._turn_started = time.time()
+        self._refresh_status_row()
+        try:
+            ticker = self.ctx.ServiceManager.createInstanceWithContext(
+                "com.sun.star.awt.Timer", self.ctx)
+        except Exception:
+            _log("no timer available; the elapsed clock stays hidden")
+            return
+        try:
+            ticker.SetTimeout = 1000
+            ticker.SetInterval = True
+            ticker.SetCallback(_Ticker(self))
+            ticker.Start()
+            self._ticker = ticker
+        except Exception:
+            _log("timer setup failed:\n%s" % traceback.format_exc())
+
+    def _stop_ticker(self):
+        self._turn_started = 0.0
+        if self._ticker is not None:
+            try:
+                self._ticker.Stop()
+            except Exception:
+                pass
+            self._ticker = None
 
     def _set_busy(self, busy, label="Send"):
         """Reflect that a turn is running.
@@ -600,6 +710,12 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         without it a slow turn looks like a broken one.
         """
         self._busy = busy
+        if busy:
+            self._start_ticker()
+        else:
+            self._stop_ticker()
+            self._status_text = ""
+        self._refresh_status_row()
         button = self._controls.get("btnSend")
         if button is None:
             return
