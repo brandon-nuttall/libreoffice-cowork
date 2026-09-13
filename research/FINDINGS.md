@@ -1572,3 +1572,82 @@ rebuild, a sandbox restart and a minute of waiting, and I have made four attempt
 without converging. The honest summary: the panel is structurally a chat now, the
 formatting is right, and the empty state needs someone looking at it iteratively —
 which is cheap for a person with the panel open and expensive for me.
+
+---
+
+# A FASTER LOOP, AND WHAT IT FOUND
+
+Told to take as long as needed (`"keep trying :)"`), so the first thing to fix was
+the loop itself. Every layout attempt had cost: edit → rebuild the `.oxt` →
+reinstall → restart LibreOffice → activate the deck → capture → look. About a
+minute per attempt, and four attempts had not converged.
+
+## F45 — Two tools, and the process error behind them
+
+**`tests/panel-layout.py`** prints the panel's actual geometry as numbers — row
+positions, heights, widths, visibility, font size, alignment, colours, plus
+`<-- BELOW VIEW` and `<-- HEIGHT < TEXT` markers. Most layout faults are not
+visual questions: *is the row inside the viewport, is its height bigger than its
+font, is it hidden.* Those are numbers, and a capture is then only needed to
+confirm taste.
+
+**`tests/check-methods.py`** answers one question fast: does the component define
+every method it calls.
+
+**`tests/run-all.sh`** runs everything, with output visible, in one command.
+
+That last one exists because of a mistake worth recording. The statics check had
+been correctly reporting `CoworkUIElement._scroll_to_newest() is not defined`
+while I ran it as:
+
+    python3 tests/test-component-statics.py >/dev/null 2>&1 && echo "statics: PASS"
+
+I read the exit status and threw away the message. Four separate edits deleted
+`_scroll_to_newest` or `_set_busy`, each producing a panel that imported cleanly
+and then failed inside LibreOffice with an AttributeError, and each costing a full
+rebuild-restart-capture cycle to discover. **The check was right and I was
+discarding its output.**
+
+## F46 — The bug that mattered: a stale width preferred over the live one
+
+```python
+width = self._transcript_width or container.getPosSize().Width or _FALLBACK_WIDTH
+```
+
+`_transcript_width` is captured during a layout pass, and one early pass happens
+while the sidebar is still at its **92-unit minimum**. Preferring that cached value
+wrapped every message at 16 columns, so `hello world` rendered as `hello w` — the
+conversation looked truncated no matter how wide the sidebar became. Reversing the
+preference to use the live container size fixed it.
+
+## F47 — Also fixed in this pass
+
+* **The empty state no longer flows into the transcript.** It is drawn as one of
+  two modes, so a conversation no longer inherits its centred rows and generous
+  gaps — which is what made two words sit far apart down a blank panel.
+* **One bubble per message**, not one per line. A per-line bubble gave a
+  multi-line message a stripe per row.
+* **An empty render no longer hides the pool.** Renders happen on scroll and on
+  every status change, so a later empty pass was wiping a conversation that had
+  just been drawn correctly.
+* **`_transcript_bubbles` was never initialised**, which crashed the panel on
+  build with `AttributeError`.
+
+## F48 — Where it stands
+
+Working: no crashes; the user's message renders in a tinted bubble; the assistant's
+reply is plain text; markdown is parsed by LibreOffice's own filter; the status
+line shows progress and clears.
+
+Not right: **the chat does not yet look like the reference.** The bubble is a
+full-width block rather than a shape that hugs its text, spacing between messages
+is still loose, and the composer is still two labelled buttons instead of a boxed
+field with a filled send arrow. Captures consistently show only the first message
+line while the readback reports the correct geometry, which suggests my inspection
+is reaching a different panel instance than the one on screen — worth resolving
+before the next round of layout work, because it is why the last several attempts
+felt like they were converging and did not.
+
+The reference shape, for whoever picks this up: assistant text plain, user text in
+a hugging bubble, centred empty state with suggestion chips, and a composer box
+containing `+`, a placeholder, a model picker and a filled send button.
