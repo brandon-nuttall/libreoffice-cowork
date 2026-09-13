@@ -293,32 +293,20 @@ def main():
           "check" in (element.seen_statuses() or [""])[-1].lower(),
           repr(element.seen_statuses()[-1:]))
 
-    print("\nthe threaded path (what the panel actually uses)")
-    FakeClient.calls = []
-    FakeClient.script = (("tool", {"name": "document_read"}),
-                         ("chunk", {"text": "streamed "}),
-                         ("chunk", {"text": "answer"}),
-                         ("done", {"text": "answer"}))
-    FakeClient.raises = None
-    original = panel.AgentClient
-    panel.AgentClient = FakeClient
-    threaded = FakeElement("file:///tmp/report.odt")
-    try:
-        # `_turn_worker` is what runs off the UI thread; post_from_worker stands
-        # in for the AsyncCallback hop, so this asserts the real worker code.
-        panel._turn_worker(threaded, "do the thing")
-    finally:
-        panel.AgentClient = original
-    text = threaded.transcript()
-    # The authoritative final text replaces the streamed approximation, so the
-    # end state holds the final text, not the partial one.
-    check("the worker puts a reply in the transcript",
-          "answer" in text, repr(text))
-    check("it reports the tool in the user's terms",
-          any("Reading the document" in t for t in threaded.seen_statuses()),
-          repr(threaded.seen_statuses()))
-    check("the final text is applied",
-          text.strip().endswith("answer"), repr(text))
+    print("\ntool progress goes to the row, not the transcript")
+    element = run("toolsrow", script=(
+        ("tool", {"name": "document_read"}),
+        ("chunk", {"text": "Done."}),
+        ("done", {"text": "Done."}),
+    ))
+    check("the tool label reached the progress row",
+          any("Reading the document" in t for t in element.seen_statuses()),
+          repr(element.seen_statuses()))
+    check("and never entered the transcript",
+          "Reading the document" not in element.transcript(),
+          repr(element.transcript()))
+    check("the rows is cleared once real output arrives",
+          element.status_row() == "", repr(element.status_row()))
 
     print("\nShift+Enter sends, Enter adds a newline")
     element = FakeElement("file:///tmp/report.odt")
@@ -354,6 +342,16 @@ def main():
     keys.keyReleased(KeyEvent(RETURN, SHIFT))
     check("a release with no prior press cannot send", element.submits == 1,
           element.submits)
+
+    print("\nthe progress row empties when the turn ends")
+    element = run("rowclear", script=(
+        ("tool", {"name": "document_read"}),
+        ("chunk", {"text": "Done."}),
+        ("done", {"text": "Done."}),
+    ))
+    check("no status text survives the turn",
+          element.status_row() == "", repr(element.status_row()))
+    check("and busy is cleared", element.busy is False, repr(element.busy))
 
     print("\nhandling an unreachable service")
     element = run("unreachable", raises=panel.AgentUnavailable(

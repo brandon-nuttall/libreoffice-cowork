@@ -2,10 +2,17 @@
 <!DOCTYPE manifest:manifest PUBLIC "-//OpenOffice.org//DTD Manifest 1.0//EN" "Manifest.dtd">
 <manifest:manifest xmlns:manifest="http://openoffice.org/2001/manifest">
   <manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.sun.star.package-bundle"/>
-  <manifest:file-entry manifest:full-path="components/cowork_bridge.py" manifest:media-type="application/vnd.sun.star.uno-component;type=Python"/>
   <manifest:file-entry manifest:full-path="components/cowork_job.py" manifest:media-type="application/vnd.sun.star.uno-component;type=Python"/>
   <manifest:file-entry manifest:full-path="components/cowork_sidebar.py" manifest:media-type="application/vnd.sun.star.uno-component;type=Python"/>
   <manifest:file-entry manifest:full-path="components/cowork_commands.py" manifest:media-type="application/vnd.sun.star.uno-component;type=Python"/>
+  <!-- Imported by cowork_sidebar.py as a sibling module. It is plain Python with
+       no UNO dependency, which is what makes the streaming path testable against
+       a live runtime without a GUI. Declared as a plain package entry so the
+       loader ships it without trying to import it as a component. -->
+  <manifest:file-entry manifest:full-path="components/cowork_client.py" manifest:media-type="text/x-python"/>
+  <!-- Run by the panel when the runtime endpoint is not answering. LibreOffice's
+       embedded Python cannot spawn the runtime, so the launcher ships here. -->
+  <manifest:file-entry manifest:full-path="components/cowork-runtime.sh" manifest:media-type="text/x-shellscript"/>
   <manifest:file-entry manifest:full-path="registry/Jobs.xcu" manifest:media-type="application/vnd.sun.star.configuration-data"/>
   <manifest:file-entry manifest:full-path="registry/ProtocolHandler.xcu" manifest:media-type="application/vnd.sun.star.configuration-data"/>
   <manifest:file-entry manifest:full-path="registry/Addons.xcu" manifest:media-type="application/vnd.sun.star.configuration-data"/>

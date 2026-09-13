@@ -32,8 +32,19 @@ LOG="$LOG_DIR/cowork-runtime.log"
 mkdir -p "$LOG_DIR"
 log() { printf '%s %s\n' "$(date -Is)" "$*" >> "$LOG" 2>/dev/null || true; }
 
+# Probe the endpoint with python rather than a bash /dev/tcp redirect. The
+# latter is a bash extension, and this script is launched by the panel through
+# `/bin/sh` from LibreOffice's embedded Python: it reported the port closed while
+# the runtime was demonstrably answering on it, which made a successful start look
+# like a failure. python3 is already a hard requirement of this project.
 port_open() {
-  (exec 3<>/dev/tcp/127.0.0.1/"$PORT") 2>/dev/null
+  python3 - "$PORT" <<'PROBE' >/dev/null 2>&1
+import socket, sys
+try:
+    socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=1).close()
+except OSError:
+    sys.exit(1)
+PROBE
 }
 
 find_dsh() {

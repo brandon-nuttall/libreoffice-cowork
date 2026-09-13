@@ -1227,3 +1227,95 @@ $ client.ask(...)          # the panel's own client, unchanged
 A plain file log at `~/.cache/cowork-serve.log` records apply, listening and every
 request, because the row's failures are otherwise invisible: an early return on a
 missing service made an earlier version look like it had never been mounted.
+
+---
+
+# THE PANEL WORKS, SEEN IN A CAPTURE
+
+Asked "why does it have that cowork_agent.py message?" and "i don't see any
+progress or any indication that anything is working at all".
+
+Both were real. The capture now shows the whole round trip: the greeting, my
+message, the reply **FINIAL OK**, and an **empty** progress row afterwards.
+
+## F29 — The stale message was a cached greeting
+
+The panel showed "Start it with: python3 dsh/libreoffice/cowork/cowork_agent.py",
+a file that had been deleted in the previous commit.
+
+Cause: the greeting is cached per document in a module-level dict, and that cache
+outlives the code that wrote it. Opening a document that had been seen before
+replayed the old text.
+
+Two fixes:
+
+* **The greeting no longer names a command.** It says the panel will start up on
+  the next message, which is true, and points at the log if it does not.
+* **`_GREETING_VERSION`** travels with each cached greeting, and a cached
+  conversation whose greeting carries a different version is re-seeded. Without
+  it, every wording change would be invisible for every previously-opened
+  document.
+
+## F30 — The progress row was empty because no turn had been sent
+
+The log showed the panel being built with no `posted`/`delivering` lines
+afterwards: **no message had ever been sent**. The row was empty because there was
+nothing to report.
+
+That could not be left as "probably fine", so the panel gained a testing hook:
+with `COWORK_AUTOSEND` set it submits that text once, on the first resize — the
+first moment it has real geometry, and a plain VCL callback with no marshalling
+involved. That made the panel's own turn path reachable without a person at the
+keyboard, and it immediately found the next bug.
+
+## F31 — Streaming through AsyncCallback does not work, and the reason matters
+
+The panel tried to stream a turn on a worker thread and marshal updates with
+`AsyncCallback`. The pump fired **once** and then stopped.
+
+An isolated probe settled it: re-arming from inside `notify` DOES work — five
+callbacks in a row fired. So the failure is specific to the panel's shape, where
+one `notify` both drains a queue and re-arms. A callback registered while the
+previous one is still executing is dropped.
+
+Rather than keep fighting it, the turn now runs **inline**. The reply is rendered
+as it arrives on the VCL thread; the progress row and the Send button carry the
+"still working" signal. A turn that silently stops updating is worse than one that
+blocks, and this path is guaranteed to update.
+
+Consequence: the elapsed clock cannot tick while the turn blocks, so it is
+computed at each redraw — which lands on tool calls, and that is where the useful
+reading is ("Checking the layout… 24s").
+
+## F32 — "Working…" stayed on screen after the turn finished
+
+Visible in the first successful capture: the reply was rendered and the row still
+read "Working…". The end-of-turn order cleared the status *before* clearing the
+busy flag, so the row's own clearing redrew it as busy. Fixed by clearing busy
+first, and by making the label show only what a tool call actually reported rather
+than falling back to "Working…" whenever busy.
+
+## F33 — Two checks added, because three edits in a row deleted more than intended
+
+A bad half hour: several automated edits to `cowork_sidebar.py` each removed more
+than asked, and the result was never a syntax error. It was a panel that imported
+cleanly and then failed inside LibreOffice with `AttributeError: … has no attribute
+'_set_busy'` — three separate times, each found only by opening the office and
+reading a log.
+
+`tests/test-component-statics.py` now checks, per file:
+
+* it parses;
+* every name a function loads resolves (scope-aware — a first attempt reported 70
+  false positives by treating locals as missing globals, and a check that noisy
+  trains you to ignore it);
+* every `self.method()` a class calls is defined by that class, or inherited from
+  an external base;
+* **every file in `components/` is declared in the manifest, and every manifest
+  entry has a file.** That one immediately caught `cowork_client.py` and
+  `cowork-runtime.sh` missing from the manifest after an edit rewrote it — the
+  sidebar imports one and runs the other, so both would have been absent from the
+  installed extension.
+
+It also let me delete `cowork_bridge.py`, an unused prototype that had been in the
+manifest since the first day.
