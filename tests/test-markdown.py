@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Tests for the markdown renderer.
+"""Tests for the transcript block model.
 
-`cowork_markdown` has no UNO imports precisely so this can run without
-LibreOffice. The formatting it produces is the part most likely to be wrong in
-ways a screenshot would only show by luck — a bullet left as "-", a heading left
-with its hashes — so it is tested directly.
+Markdown PARSING is no longer ours — LibreOffice's own Markdown filter does it —
+so there is nothing to test here about syntax. What remains testable without a
+live office is the part we still own: the block model, the layout maths, and the
+emphasis thresholds that decide whether a text run is bold.
+
+An earlier version of this file tested a regex parser. That parser was deleted
+when the office filter replaced it, and these tests were rewritten rather than
+left passing against code that no longer exists.
 
     python3 tests/test-markdown.py
 """
@@ -26,124 +30,69 @@ def check(label, ok, detail=""):
         FAILURES.append(label)
 
 
-def kinds(blocks):
-    return [b["kind"] for b in blocks]
-
-
-def texts(blocks, kind=None):
-    return [b["text"] for b in blocks if kind is None or b["kind"] == kind]
+def block(kind, text, bold=False):
+    return {"kind": kind, "runs": [{"text": text, "bold": bold,
+                                    "italic": False, "mono": False}]}
 
 
 def main():
-    print("markdown rendering\n")
+    print("transcript block model\n")
 
-    print("the shapes an agent actually replies with")
-    sample = (
-        "Hello! I'm Cowork — I work on the LibreOffice document you have open.\n"
-        "\n"
-        "A few things I can do:\n"
-        "\n"
-        "- **Edit or rewrite text** in a Writer doc\n"
-        "- **Review a document** for layout problems\n"
-        "- Build a presentation from an outline\n"
-        "\n"
-        "If you have something open, just tell me what you'd like changed.\n"
-    )
-    blocks = md.parse(sample)
-    check("bullets are recognised, not left as dashes",
-          kinds(blocks).count(md.BULLET) == 3, kinds(blocks))
-    check("no bullet text keeps its leading dash",
-          not any(t.startswith(("-", "*")) for t in texts(blocks, md.BULLET)),
-          texts(blocks, md.BULLET))
-    check("no bold markers survive anywhere",
-          not any("**" in t for t in texts(blocks)), texts(blocks))
-    check("paragraphs are separate blocks",
-          kinds(blocks).count(md.PARAGRAPH) >= 2, kinds(blocks))
+    print("the module does not parse markdown itself")
+    check("there is no hand-written parser left",
+          not hasattr(md, "parse") and not hasattr(md, "strip_inline"),
+          "a parser reappeared; the office filter is supposed to own this")
+    check("parsing is delegated to the office filter",
+          hasattr(md, "parse_with_office"), dir(md))
 
-    print("\nheadings")
-    blocks = md.parse("## What I found\n\nDetails here.")
-    check("a heading becomes a heading block",
-          kinds(blocks)[0] == md.HEADING, kinds(blocks))
-    check("and keeps its level", blocks[0].get("level") == 2, blocks[0])
-    check("with the hashes removed", blocks[0]["text"] == "What I found", blocks[0])
+    print("\nblocks carry runs, not a flat string")
+    b = block(md.PARAGRAPH, "hello")
+    check("a block has runs", isinstance(b.get("runs"), list), b)
+    check("plain() reads them back", md.plain(b) == "hello", md.plain(b))
 
-    print("\ncode fences")
-    blocks = md.parse("Run this:\n\n```\nsoffice --headless\n```\n\nDone.")
-    check("a fenced block becomes a code block",
-          md.CODE in kinds(blocks), kinds(blocks))
-    check("the fence markers are gone",
-          not any("```" in t for t in texts(blocks)), texts(blocks))
-    check("the command survives intact",
-          "soffice --headless" in texts(blocks, md.CODE), texts(blocks, md.CODE))
-
-    print("\nunclosed fence")
-    blocks = md.parse("text\n\n```\nstill code")
-    check("an unterminated fence still yields a code block",
-          md.CODE in kinds(blocks), kinds(blocks))
-
-    print("\ninline emphasis")
-    check("bold markers are stripped",
-          md.strip_inline("**bold** and normal") == "bold and normal")
-    check("italic markers are stripped",
-          md.strip_inline("*italic* here") == "italic here")
-    check("inline code backticks are stripped",
-          md.strip_inline("run `ls` now") == "run ls now")
-    check("link URLs are dropped but text kept",
-          md.strip_inline("see [the docs](https://example.com)") == "see the docs")
-    check("an underscore in a word is left alone",
-          md.strip_inline("file_name here") == "file_name here")
-    check("a lone asterisk is not treated as emphasis",
-          md.strip_inline("2 * 3 = 6") == "2 * 3 = 6")
-
-    print("\nordered lists")
-    blocks = md.parse("1. first\n2. second")
-    check("numbered items become bullets with their number kept",
-          texts(blocks, md.BULLET) == ["1. first", "2. second"], texts(blocks, md.BULLET))
-
-    print("\nthe conversation wrapper")
+    print("\nspeaker labels come from the entry kind")
     blocks = md.layout([
-        {"kind": "cowork", "text": "Hello there."},
-        {"kind": "you", "text": "Do the thing"},
-        {"kind": "cowork", "text": "Done."},
-    ])
-    check("each message gets a speaker label",
-          texts(blocks, md.SPEAKER) == ["Cowork", "You", "Cowork"],
-          texts(blocks, md.SPEAKER))
-    check("labels are separate blocks from the text",
-          kinds(blocks)[0] == md.SPEAKER and kinds(blocks)[1] == md.PARAGRAPH,
-          kinds(blocks))
+        {"kind": "cowork", "text": "one"},
+        {"kind": "you", "text": "two"},
+    ], lambda text: [block(md.PARAGRAPH, text)])
+    speakers = [md.plain(x) for x in blocks if x["kind"] == md.SPEAKER]
+    check("each message gets a label", speakers == ["Cowork", "You"], speakers)
+    check("labels are separate from the body",
+          [x["kind"] for x in blocks] ==
+          [md.SPEAKER, md.PARAGRAPH, md.SPEAKER, md.PARAGRAPH],
+          [x["kind"] for x in blocks])
+
+    print("\na parse failure degrades instead of crashing")
+    def failing(_text):
+        raise RuntimeError("no office")
+    try:
+        md.layout([{"kind": "cowork", "text": "x"}], failing)
+        check("layout propagates the failure for the caller to handle", False,
+              "it swallowed the error")
+    except RuntimeError:
+        check("layout propagates the failure for the caller to handle", True)
 
     print("\nspacing")
     blocks = md.layout([
-        {"kind": "cowork", "text": "First message."},
-        {"kind": "you", "text": "Second message."},
-    ])
-    gaps = [md.gap_before(b, blocks[i - 1] if i else None)
-            for i, b in enumerate(blocks)]
-    check("a new message has more space above it than a continuation",
+        {"kind": "cowork", "text": "first"},
+        {"kind": "you", "text": "second"},
+    ], lambda text: [block(md.PARAGRAPH, text)])
+    gaps = [md.gap_before(b, blocks[i - 1] if i else None) for i, b in enumerate(blocks)]
+    check("a new message is separated more than a continuation",
           max(gaps) >= md.GAP_BLOCK, gaps)
     check("the first block has no leading gap", gaps[0] == 0, gaps)
 
-    print("\nhostile input")
-    for label, hostile in [
-        ("empty string", ""),
-        ("only newlines", "\n\n\n"),
-        ("only markers", "***"),
-        ("unbalanced bold", "**unclosed"),
-        ("unbalanced backticks", "`unclosed"),
-        ("a very long line", "word " * 500),
-    ]:
-        try:
-            md.parse(hostile)
-            check("%s does not crash" % label, True)
-        except Exception as exc:  # noqa: BLE001
-            check("%s does not crash" % label, False, exc)
+    print("\nthe style maps use the filter's own style names")
+    check("heading styles are mapped from the filter's own names",
+          md._HEADING_STYLES.get("Heading 1") == 1, md._HEADING_STYLES)
+    check("code styles are mapped from the filter's own names",
+          "Preformatted Text" in md._CODE_STYLES, md._CODE_STYLES)
 
     print()
     if FAILURES:
         print("FAILED: %d check(s): %s" % (len(FAILURES), ", ".join(FAILURES)))
         return 1
-    print("All markdown checks passed.")
+    print("All block-model checks passed.")
     return 0
 
 

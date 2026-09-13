@@ -1445,3 +1445,70 @@ Verified by capture: speaker labels render grey and bold, paragraphs wrap, the
 font size is right, and no `**` or `-` markers reach the screen. Row spacing is
 still loose — the gap between a speaker label and its first line is visibly larger
 than intended — so that is the next thing to tighten.
+
+---
+
+# THE MARKDOWN PARSER WAS ALREADY IN LIBREOFFICE
+
+Asked: *"we probably don't want to create our own brand new markdown renderer -- is
+there a markdown renderer that's already part of libreoffice? or some other library
+we can use?"*
+
+Yes, and I should have looked before writing one.
+
+## F40 — LibreOffice 26.2 ships a Markdown filter
+
+`share/registry/writer.xcd` declares a filter with:
+
+```
+oor:name="Markdown"        Types: IMPORT EXPORT ALIEN
+Extensions: "md markdown"  MediaType: "text/markdown"
+UIName: "Markdown Document"  FilterService: com.sun.star.text.TextDocument
+```
+
+Loading markdown with it produces a fully styled Writer document, and the styling
+is readable through the ordinary document model:
+
+```
+"# A Heading"   -> ParaStyleName "Heading 1",  run CharWeight 150.0
+"**bold**"      -> a run with CharWeight 150.0
+"*italic*"      -> a run with CharPosture ITALIC
+"- item"        -> body paragraph with NumberingRules
+"```code```"    -> ParaStyleName "Preformatted Text"
+```
+
+So `cowork_markdown.py` no longer parses anything. It writes the text to a temp
+file, loads it hidden through that filter, and reads back styled blocks with
+per-run emphasis. Roughly 120 lines of hand-written regex were deleted.
+
+## What this buys, and what it costs
+
+**Buys:** the full CommonMark-ish syntax, maintained by the office, for free —
+tables, nested lists, links, block quotes — none of which my parser handled. And
+it cannot drift from what LibreOffice's own Markdown export produces.
+
+**Costs:** parsing now needs a live office, so it is no longer a pure function and
+cannot be tested the way the regex parser was. `tests/test-markdown.py` was
+rewritten to test what remains ours — the block model, spacing, and the style maps
+— rather than left passing against code that no longer exists. Blocks are parsed
+once per message and cached on the entry, because a render happens on every
+scroll.
+
+## F41 — Two more API names
+
+* `UnoControlScrollBar` has **no `addScrollListener`** — it is
+  `addAdjustmentListener` (the interface is `XAdjustmentListener`).
+* `_wrap` lost its `@staticmethod` decorator during the renderer rewrite, so it
+  was called with `self` as its first argument, and the panel failed to build with
+  `takes 2 positional arguments but 3 were given`.
+
+Both were caught by instrumentation rather than by inspection, which is the
+pattern for this whole panel: it is small enough to look correct and behaves badly
+in ways only a log or a capture reveals.
+
+## Still open
+
+Row spacing is looser than intended — the gap between a speaker label and its
+first line is visibly too large — so `_ROW_HEIGHT` and the `gap_before` values
+need tightening. The capture at this point shows text rendering correctly at the
+right size with emphasis preserved, which is the part that was broken.
