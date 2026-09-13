@@ -33,14 +33,15 @@ panel, and the point is to get work done on the document.
 """
 
 import os
+import threading
 import time
 import traceback
 
 import uno
 import unohelper
 
-from com.sun.star.awt import (XActionListener, XKeyListener, XWindowListener,
-                              XTextListener)
+from com.sun.star.awt import (XActionListener, XCallback, XKeyListener,
+                              XWindowListener, XTextListener)
 from com.sun.star.awt.Key import RETURN as KEY_RETURN
 from com.sun.star.awt.KeyModifier import SHIFT as MOD_SHIFT
 from com.sun.star.awt.PosSize import POSSIZE
@@ -75,6 +76,9 @@ _STATUS_HEIGHT = 18
 # Show the elapsed clock only after this long, matching the DSH progress chrome:
 # a count-up on a two-second call is noise, on a thirty-second one it is the
 # difference between "working" and "hung".
+# The elapsed count appears only after this long. A count-up on a two-second call
+# is noise; on a thirty-second one it is the difference between "working" and
+# "hung". Matches the harness's own progress chrome.
 _CLOCK_AFTER_MS = 15000
 _BUTTON_HEIGHT = 26
 # The width the panel needs to be legible, not the width it can survive. This is
@@ -95,6 +99,34 @@ _DEFAULT_KEY = "(no document)"
 # for every document that was ever opened. That is exactly what happened: the
 # panel kept displaying an instruction to run a script that no longer exists.
 _GREETING_VERSION = 2
+
+# ---------------------------------------------------------------------------
+# Thread hand-off.
+#
+# The turn MUST NOT run on the VCL thread. Doing so froze the application hard
+# enough that the desktop offered to force-quit LibreOffice — reported as "it
+# responds but it then crashes the app".
+#
+# A worker produces events, a queue carries them, and `AsyncCallback` delivers
+# them to the GUI thread. The re-arm is done by a small dedicated thread rather
+# than from inside `notify`: a probe of both shapes in a live office showed each
+# delivering four callbacks in a row, so re-entrant re-arming is not inherently
+# broken — but the independent-thread shape cannot be affected by whatever else
+# runs inside `notify`, and this is not a place to be clever twice.
+# ---------------------------------------------------------------------------
+_QUEUE = []
+_QUEUE_LOCK = threading.Lock()
+
+
+def _emit(item):
+    with _QUEUE_LOCK:
+        _QUEUE.append(item)
+
+
+def _drain():
+    with _QUEUE_LOCK:
+        items, _QUEUE[:] = list(_QUEUE), []
+    return items
 
 def _log(msg):
     try:
@@ -213,6 +245,62 @@ class _PanelListener(unohelper.Base, XActionListener, XTextListener):
         self.element = None
 
 
+def _turn_worker(element, prompt):
+    """Run one turn off the GUI thread, reporting progress through the queue."""
+    try:
+        document = element.frame.getController().getModel().getURL() or ""
+    except Exception:
+        document = ""
+
+    def on_event(kind, payload):
+        if kind == "chunk":
+            _emit(("chunk", payload.get("text", "")))
+        elif kind == "tool":
+            _emit(("tool", payload.get("label") or element._describe_tool(
+                payload.get("name", ""))))
+
+    try:
+        final = AgentClient().ask(document, prompt, on_event,
+                                  should_stop=lambda: element._closing)
+        _emit(("final", final))
+    except AgentUnavailable as exc:
+        _emit(("error", str(exc)))
+    except Exception as exc:  # noqa: BLE001
+        _emit(("error", "That did not work: %s" % exc))
+
+
+class _PumpRunner(threading.Thread):
+    """Keeps asking the GUI thread to drain the queue.
+
+    A dedicated thread rather than re-arming inside `notify`. Both shapes were
+    measured delivering four callbacks in a row in a live office, so neither is
+    obviously wrong; this one cannot be disturbed by anything else `notify` does,
+    and the pump is the part that has already failed once.
+    """
+
+    def __init__(self, element):
+        threading.Thread.__init__(self, name="cowork-pump", daemon=True)
+        self.element = element
+
+    def run(self):
+        while not self.element._closing:
+            self.element._arm_pump()
+            time.sleep(0.15)
+
+
+class _MainThreadPump(unohelper.Base, XCallback):
+    """Runs on the GUI thread and drains the queue."""
+
+    def __init__(self, element):
+        self.element = element
+
+    def notify(self, _data):
+        element = self.element
+        if element is None or element._closing:
+            return
+        element._pump_once()
+
+
 class _ComposerKeys(unohelper.Base, XKeyListener):
     """Shift+Enter sends; Enter inserts a newline.
 
@@ -309,6 +397,12 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         self._turn_started = 0.0
 
         self._autosend_pending = False
+        self._closing = False
+        self._streaming = False
+        self._worker = None
+        self._async = None
+        self._pump = None
+        self._pump_thread = None
         # AsyncCallback + its callback object must both outlive every turn.
         self._worker = None
 
@@ -375,13 +469,11 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         # MultiLine + no horizontal scroll: a single-line field scrolls the text
         # sideways as you type, so anything longer than the box width is
         # invisible. Wrapping keeps the whole message readable.
-        # Progress row: an indeterminate bar (the toolkit animates it for us, so
-        # there is visible motion with no timer at all), a label naming what is
-        # happening, and a count-up clock.
-        self._control(container, "prgStatus", "UnoControlProgressBar",
-                      "UnoControlProgressBarModel",
-                      ProgressValue=0, ProgressValueMin=0, ProgressValueMax=100)
-
+        # A single status line. Deliberately NOT a progress bar: completion is
+        # not deterministic — nobody knows how many tool calls a request will
+        # take — so a bar filling toward a finish line would be a lie. What the
+        # reader wants is evidence of forward momentum, which is what a label
+        # naming the current step plus an elapsed count gives.
         self._control(container, "lblStatus", "UnoControlFixedText",
                       "UnoControlFixedTextModel",
                       Label="", MultiLine=False, Align=0)
@@ -424,6 +516,21 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         # turn path — button to client to transport to transcript — was otherwise
         # unreachable without a person at the keyboard. With COWORK_AUTOSEND set
         # the panel sends that text once, shortly after it opens.
+        # AsyncCallback is creatable from this context; a bare script context
+        # returns None, which is what made an earlier attempt look impossible.
+        try:
+            self._async = self.ctx.ServiceManager.createInstanceWithContext(
+                "com.sun.star.awt.AsyncCallback", self.ctx)
+            self._pump = _MainThreadPump(self)
+            self._pump_thread = _PumpRunner(self)
+            self._pump_thread.start()
+            _log("pump started")
+        except Exception:
+            self._async = None
+            self._pump = None
+            _log("no AsyncCallback; progress will not update during a turn:\n%s"
+                 % traceback.format_exc())
+
         autosend = os.environ.get("COWORK_AUTOSEND")
         if autosend:
             composer = self._controls.get("txtComposer")
@@ -489,11 +596,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             transcript_h = max(status_y - _GAP - transcript_y, 60)
 
             self._place("txtTranscript", _MARGIN, transcript_y, inner, transcript_h)
-            # Bar on the left, label filling the rest of the row.
-            bar_w = min(90, max(inner // 4, 40))
-            self._place("prgStatus", _MARGIN, status_y + 4, bar_w, _STATUS_HEIGHT - 8)
-            self._place("lblStatus", _MARGIN + bar_w + _GAP, status_y,
-                        max(inner - bar_w - _GAP, 20), _STATUS_HEIGHT)
+            self._place("lblStatus", _MARGIN, status_y, inner, _STATUS_HEIGHT)
             self._place("txtComposer", _MARGIN, composer_y, inner, _COMPOSER_HEIGHT)
             half = max((inner - _GAP) // 2, 30)
             self._place("btnSend", _MARGIN, buttons_y, half, _BUTTON_HEIGHT)
@@ -591,18 +694,6 @@ class CoworkUIElement(unohelper.Base, XUIElement):
 
     # -- the progress row ---------------------------------------------- //
 
-    def _spinner_value(self):
-        """A slowly advancing fraction of the bar.
-
-        The bar is deliberately NOT a percentage: nobody knows how far through a
-        model turn is, and a bar that sits at 70% for a minute is worse than no
-        bar. A slow crawl reads as "alive" without promising a finish time.
-        """
-        if not self._turn_started:
-            return 30
-        elapsed = time.time() - self._turn_started
-        return int(15 + (elapsed * 3) % 70)
-
     def _status_label(self):
         """`Deep diving... 18s` — the label plus a clock, as DSH shows it."""
         text = self._status_text or "Working…"
@@ -629,31 +720,21 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         self._turn_started = 0.0
 
     def _refresh_status_row(self):
-        """Draw the progress row.
+        """Draw the status line.
 
-        The row is empty unless there is something to say. An earlier version fell
-        back to "Working…" whenever the turn was busy, which meant that clearing
-        the status *before* clearing the busy flag — the natural order at the end
-        of a turn — redrew "Working…" and left it on screen after the work had
-        finished. Verified in a capture: the reply was rendered and the row still
-        read "Working…".
-
-        So the label shows only what a tool call actually reported, and the bar
-        only moves while a turn is running.
+        Empty unless there is something to say. An earlier version fell back to
+        "Working…" whenever the turn was busy, so clearing the status *before*
+        clearing the busy flag — the natural order at the end of a turn — redrew
+        "Working…" and left it on screen after the work had finished. Caught in a
+        capture: the reply was rendered and the row still read "Working…".
         """
         label = self._control_by_name("lblStatus")
-        bar = self._control_by_name("prgStatus")
-        if label is not None:
-            try:
-                label.setText(self._status_label() if self._status_text else "")
-            except Exception:
-                _log(traceback.format_exc())
-        if bar is not None:
-            try:
-                value = self._spinner_value() if (self._busy and self._status_text) else 0
-                bar.getModel().ProgressValue = value
-            except Exception:
-                _log(traceback.format_exc())
+        if label is None:
+            return
+        try:
+            label.setText(self._status_label() if self._status_text else "")
+        except Exception:
+            _log(traceback.format_exc())
 
     def _set_status(self, text):
         """Show what is happening in the progress row.
@@ -672,20 +753,35 @@ class CoworkUIElement(unohelper.Base, XUIElement):
 
     # -- the turn ------------------------------------------------------- //
 
+    def _set_busy(self, busy, label="Send"):
+        """Reflect that a turn is running, and start or stop the clock.
+
+        The toolkit has no spinner, so the Send button is the indicator: a slow
+        turn with nothing changing is indistinguishable from a frozen
+        application. The status line is refreshed on the same transition.
+        """
+        self._busy = busy
+        if busy:
+            self._turn_started = time.time()
+        else:
+            self._turn_started = 0.0
+            self._status_text = ""
+        self._refresh_status_row()
+        button = self._controls.get("btnSend")
+        if button is None:
+            return
+        try:
+            button.getModel().Label = "Working…" if busy else label
+            button.getModel().Enabled = not busy
+        except Exception:
+            _log(traceback.format_exc())
+
     def submit(self):
         """Send the composer text as the next message in this conversation.
 
-        The turn runs on this thread, deliberately.
-
-        Streaming through `AsyncCallback` was tried and abandoned. The pump fired
-        once and then stopped: re-arming a callback from inside `notify` is
-        silently dropped when the same `notify` also drains a queue, which is
-        exactly what streaming needs. A probe that re-armed from `notify` with
-        nothing else to do worked, so the failure is specific to that shape.
-
-        A turn that silently stops updating is worse than one that blocks, so the
-        reply is rendered as it arrives on this thread and the progress row plus
-        the Send button carry the "still working" signal.
+        The turn runs on a worker thread. Running it here froze LibreOffice hard
+        enough for the desktop to offer a force-quit, so blocking the VCL thread
+        is not an option even though it would be simpler.
         """
         composer = self._control_by_name("txtComposer")
         if composer is None or self._busy:
@@ -705,81 +801,66 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         self._append("You", text)
         self._set_busy(True)
         try:
-            self._run_turn(text)
-        finally:
-            if self._busy:
-                self._set_busy(False)
-
-    def _run_turn(self, prompt):
-        """Stream one reply into the transcript, on this thread."""
-        try:
-            document = self.frame.getController().getModel().getURL() or ""
-        except Exception:
-            document = ""
-
-        state = {"streaming": False}
-
-        def on_event(kind, payload):
-            if kind == "chunk":
-                piece = payload.get("text", "")
-                if not piece:
-                    return
-                if not state["streaming"]:
-                    state["streaming"] = True
-                    self._drop_status()
-                    self._entries().append({"kind": "cowork", "text": ""})
-                self._entries()[-1]["text"] += piece
-                self._render()
-            elif kind == "tool":
-                # Progress belongs in the row, never in the conversation.
-                state["streaming"] = False
-                label = payload.get("label") or self._describe_tool(
-                    payload.get("name", ""))
-                self._set_status(label)
-
-        try:
-            final = AgentClient().ask(document, prompt, on_event)
-        except AgentUnavailable as exc:
-            self._drop_status()
-            self._append("Cowork", str(exc))
-            return
+            worker = threading.Thread(target=_turn_worker, args=(self, text),
+                                      name="cowork-turn", daemon=True)
+            self._worker = worker
+            worker.start()
         except Exception as exc:  # noqa: BLE001
+            _log("could not start the worker: %s" % exc)
+            self._append("Cowork", "Could not start the request: %s" % exc)
+            self._set_busy(False)
+
+    # -- applying worker output (GUI thread only) ----------------------- //
+
+    def deliver(self, item):
+        kind = item[0]
+        if kind == "chunk":
+            piece = item[1]
+            if not piece:
+                return
+            if not self._streaming:
+                self._streaming = True
+                self._drop_status()
+                self._entries().append({"kind": "cowork", "text": ""})
+            self._entries()[-1]["text"] += piece
+            self._render()
+        elif kind == "tool":
+            # Progress belongs in the row, never in the conversation.
+            self._streaming = False
+            self._set_status(item[1] or "Working…")
+        elif kind == "final":
+            self._streaming = False
+            self._set_busy(False)
             self._drop_status()
-            self._append("Cowork", "That did not work: %s" % exc)
-            return
+            if item[1] and self._entries() and self._entries()[-1]["kind"] == "cowork" \
+                    and not self._entries()[-1]["text"].strip() == "":
+                self._entries()[-1]["text"] = item[1]
+            elif item[1]:
+                self._append("Cowork", item[1])
+            self._render()
+        elif kind == "error":
+            self._streaming = False
+            self._set_busy(False)
+            self._drop_status()
+            self._append("Cowork", item[1])
+        elif kind == "pump":
+            self._pump_once()
 
-        # Clear busy before the row so the row is not redrawn as "busy" one last
-        # time by its own clearing.
-        self._set_busy(False)
-        self._drop_status()
-        if final and state["streaming"]:
-            self._entries()[-1]["text"] = final
-        elif final:
-            self._append("Cowork", final)
-        self._render()
+    def _pump_once(self):
+        """Drain the queue onto this thread, then ask for another pass."""
+        for item in _drain():
+            try:
+                self.deliver(item)
+            except Exception:
+                _log(traceback.format_exc())
 
-    def _set_busy(self, busy, label="Send"):
-        """Reflect that a turn is running.
-
-        The toolkit has no spinner, so the Send button is the indicator: a slow
-        turn with nothing changing is indistinguishable from a frozen
-        application. The progress row is refreshed on the same transition.
-        """
-        self._busy = busy
-        if busy:
-            self._start_ticker()
-        else:
-            self._stop_ticker()
-            self._status_text = ""
-        self._refresh_status_row()
-        button = self._controls.get("btnSend")
-        if button is None:
+    def _arm_pump(self):
+        if self._async is None or self._pump is None:
             return
         try:
-            button.getModel().Label = "Working…" if busy else label
-            button.getModel().Enabled = not busy
+            self._async.addCallback(self._pump, None)
         except Exception:
-            _log(traceback.format_exc())
+            _log("addCallback failed:\n%s" % traceback.format_exc())
 
     def clear(self):
         """Start a fresh thread for this document."""
@@ -819,6 +900,9 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         }.get(name, "Working…")
 
     def postDisposing(self):
+        # Stop the pump before disposing controls: the worker may still be
+        # running and must not touch a disposed window.
+        self._closing = True
         # Signal the worker before tearing anything down: a turn may still be
         # streaming, and it must not append to a disposed control.
         if self._resize_listener is not None:

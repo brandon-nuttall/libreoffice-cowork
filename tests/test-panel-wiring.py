@@ -171,12 +171,18 @@ class FakeElement:
     _closing = False
     _last_tool = None
 
+
+
+    _closing = False
+
     def deliver(self, item):
+        """Apply one worker event, as the GUI thread would."""
         panel.CoworkUIElement.deliver(self, item)
 
-    def post_from_worker(self, item):
-        """Stand in for AsyncCallback: apply immediately, on this thread."""
-        self.deliver(item)
+    def pump(self):
+        """Drain the worker queue, as the AsyncCallback pump does in the office."""
+        for item in panel._drain():
+            self.deliver(item)
 
     def transcript(self):
         out = []
@@ -223,7 +229,8 @@ def run(_case, url="file:///tmp/report.odt",
     panel.AgentClient = FakeClient
     element = FakeElement(url)
     try:
-        panel.CoworkUIElement._run_turn(element, "tighten this paragraph")
+        panel._turn_worker(element, "tighten this paragraph")
+        element.pump()
     finally:
         panel.AgentClient = original
     return element
@@ -292,6 +299,27 @@ def main():
     check("the last update is the one left on screen",
           "check" in (element.seen_statuses() or [""])[-1].lower(),
           repr(element.seen_statuses()[-1:]))
+
+    print("\nthe worker path (what the panel actually uses)")
+    FakeClient.calls = []
+    FakeClient.script = (("tool", {"name": "document_read", "label": "Reading the document…"}),
+                         ("chunk", {"text": "streamed "}),
+                         ("chunk", {"text": "answer"}),
+                         ("done", {"text": "answer"}))
+    FakeClient.raises = None
+    original = panel.AgentClient
+    panel.AgentClient = FakeClient
+    worker_el = FakeElement("file:///tmp/report.odt")
+    try:
+        panel._turn_worker(worker_el, "do the thing")
+        worker_el.pump()
+    finally:
+        panel.AgentClient = original
+    check("the worker puts a reply in the transcript",
+          "answer" in worker_el.transcript(), repr(worker_el.transcript()))
+    check("and reports the tool in the user's terms",
+          any("Reading the document" in t for t in worker_el.seen_statuses()),
+          repr(worker_el.seen_statuses()))
 
     print("\ntool progress goes to the row, not the transcript")
     element = run("toolsrow", script=(

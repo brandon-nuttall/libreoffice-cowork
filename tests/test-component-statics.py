@@ -134,6 +134,17 @@ def class_methods(tree):
     return out
 
 
+# Bases a component may inherit whose methods this file is not required to
+# define. Everything else must be declared locally.
+COMPONENT_BASES = {
+    "unohelper.Base", "Base",
+    "XUIElement", "XToolPanel", "XSidebarPanel", "XUIElementFactory",
+    "XActionListener", "XWindowListener", "XTextListener", "XKeyListener",
+    "XCallback", "XDispatch", "XDispatchProvider", "XInitialization",
+    "XServiceInfo", "XJob", "XInstanceProvider", "XTerminateListener",
+}
+
+
 def analyse(path):
     label = os.path.basename(path)
     with open(path, encoding="utf-8") as fh:
@@ -145,18 +156,17 @@ def analyse(path):
         return
     check("%s parses" % label, True)
 
-    # 1. Every name a FUNCTION body loads must resolve: module-level, local,
-    #    a parameter, or a builtin. Checked per function so locals are not
-    #    mistaken for missing globals.
+    # 1. Every name a FUNCTION loads must resolve: module-level, local, a
+    #    parameter, or a builtin. Checked per function so locals are not mistaken
+    #    for missing globals — a first version walked the whole tree and reported
+    #    70 false positives, and a check that noisy trains you to ignore it.
     defined = module_level_names(tree)
     known = defined | set(dir(builtins)) | {"__name__", "__file__", "__doc__"}
     unresolved = set()
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        locals_here = bound_names(node)
-        scope = known | locals_here
-        # Names bound by enclosing scopes.
+        scope = known | bound_names(node)
         for outer in ast.walk(tree):
             if isinstance(outer, (ast.FunctionDef, ast.AsyncFunctionDef)) and outer is not node:
                 scope |= {n.id for n in ast.walk(outer)
@@ -167,42 +177,35 @@ def analyse(path):
                     unresolved.add(sub.id)
     check("%s has no unresolved names" % label, not unresolved, sorted(unresolved))
 
-    # 2. Every self.<method>() must exist on the class or be a known attribute.
-    classes = class_methods(tree)
+    # 2. Every self.<method>() a class calls must exist somewhere: on the class,
+    #    on another class in this file, or inherited from a KNOWN component base.
+    #
+    #    An earlier version skipped a class entirely whenever ANY base was
+    #    external, which quietly exempted every UNO component — they always
+    #    inherit a UNO interface. It reported "defines every method" while
+    #    `CoworkUIElement` called `self._set_busy()` without defining it, and the
+    #    panel then failed inside LibreOffice with AttributeError.
+    classes_here = {n.name for n in tree.body if isinstance(n, ast.ClassDef)}
+    all_methods = set()
+    for methods, _attrs in class_methods(tree).values():
+        all_methods |= methods
+
     missing = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef) or node.name not in classes:
+        if not isinstance(node, ast.ClassDef):
             continue
-        methods, attrs = classes[node.name]
+        bases = [b.id for b in node.bases if isinstance(b, ast.Name)]
+        if any(b not in classes_here and b not in COMPONENT_BASES for b in bases):
+            continue                       # genuinely foreign, e.g. http.server
+        methods, attrs = class_methods(tree).get(node.name, (set(), set()))
         for sub in ast.walk(node):
             if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute):
                 target = sub.func
                 if isinstance(target.value, ast.Name) and target.value.id == "self":
                     name = target.attr
-                    # A call on a plain attribute (e.g. self._controls.get()) is
-                    # fine; only flag when the callee itself is undefined.
-                    if name not in methods and name not in attrs:
+                    if (name not in methods and name not in attrs
+                            and name not in all_methods):
                         missing.append("%s.%s()" % (node.name, name))
-    # A class may legitimately call inherited methods; only report names that no
-    # class in the file defines and that are not obviously from a UNO base.
-    # Methods inherited from an external base (a UNO interface, or an
-    # http.server handler) are not this file's to define. Check whether the class
-    # inherits anything defined outside this module, and if so, report nothing --
-    # a false positive here would train the reader to ignore the check.
-    external_base = False
-    for node in tree.body:
-        if isinstance(node, ast.ClassDef):
-            for base in node.bases:
-                name = base.id if isinstance(base, ast.Name) else None
-                if name and name not in classes:
-                    external_base = True
-    if external_base:
-        missing = []
-    else:
-        all_methods = set()
-        for methods, attrs in classes.values():
-            all_methods |= methods
-        missing = [m for m in missing if m.split(".")[-1].rstrip("()") not in all_methods]
     check("%s defines every method it calls" % label, not missing, sorted(set(missing)))
 
 

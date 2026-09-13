@@ -1319,3 +1319,61 @@ reading a log.
 
 It also let me delete `cowork_bridge.py`, an unused prototype that had been in the
 manifest since the first day.
+
+---
+
+# THE FREEZE — blocking the UI thread was the wrong call
+
+Reported as "when sending a message it responds but it then crashes the app",
+with the desktop offering **Force Quit** / Wait for "LibreOffice Writer".
+
+That was my doing. I had made the turn run inline on the VCL thread, on the
+reasoning that "a turn that silently stops updating is worse than one that
+blocks". The reasoning was wrong about which failure is worse: a brief
+silence is recoverable, a frozen application that the desktop offers to kill is
+not — and to the user it looks exactly like a crash.
+
+## F34 — The AsyncCallback pump does work; the earlier failure was elsewhere
+
+Before reverting I measured both re-arm shapes in a live office:
+
+```
+A: re-arm from inside notify        -> 4 notifies (wanted 4)
+B: an independent thread re-arms    -> 4 notifies (wanted 4)
+```
+
+**Both work.** So re-entrant re-arming is not inherently broken, and the pump's
+earlier "fires once then stops" was something else — plausibly the `deliver()`
+method the pump called having been deleted by one of the edits that deleted too
+much, whose exception was swallowed by a broad `except` in the drain loop.
+
+The panel now uses shape **B**: a small dedicated thread re-arms every 150 ms
+while a turn is in flight. It costs one thread and cannot be disturbed by whatever
+else a `notify` does. This is not a place to be clever twice.
+
+## F35 — Verified: the application stays responsive
+
+With the worker restored, the office was probed over UNO every two seconds during
+a turn:
+
+```
+..............   14/14 answered
+```
+
+No freeze, and the turn completed: the transcript shows the message and the reply,
+and the status line is empty afterwards.
+
+## F36 — The progress bar is gone
+
+*"i'm not sure we want to represent the progress as a progress bar -- the
+completion is nondeterministic so we probably just want to indicate forward
+momentum, not progress to a specific goal"*
+
+Correct. A bar implies a known destination, and nobody knows how many tool calls a
+request will take. A bar crawling toward a finish line that does not exist is a
+claim the panel cannot support.
+
+It is now a single status line naming the current step, with an elapsed count
+after 15 seconds — the same shape the harness's own chrome uses, and the honest
+one: "Checking the layout… 24s" says *this is still happening*, which is all the
+panel actually knows.
