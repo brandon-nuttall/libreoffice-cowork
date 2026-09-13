@@ -91,6 +91,35 @@ _STATUS_HEIGHT = 18
 # 3.5 mm plus leading, and a monospace advance is roughly 2.1 mm.
 _ROW_HEIGHT = 340
 _CHAR_WIDTH = 212
+
+
+def _row_height(point_size):
+    """Height for one line of text at a given point size, in 1/100 mm.
+
+    Derived from the font rather than fixed. A single constant cannot fit a 9pt
+    caption and a 12pt heading: too small and the lines overlap, too large and
+    every message is padded with dead space, and both are invisible in code and
+    obvious on screen. 10pt needs roughly 3.5mm of glyph plus 2mm of leading; the
+    formula keeps that ratio at every size.
+    """
+    return int((point_size * 0.3528 + 2.0) * 100)
+
+# Chat appearance, following Claude for Word's task pane: a plain background for
+# the assistant's replies, a tinted bubble for the user's, generous padding, and
+# the composer as a boxed field with a filled send button rather than a bare text
+# field with two labelled buttons.
+#
+# CLAUDE-ish neutral palette. LibreOffice's dark theme supplies the rest, so these
+# are only the few surfaces the panel owns.
+_COLOR_BG = -1                 # -1 = the toolkit default background
+_COLOR_USER_BUBBLE = 0x3A3A3A  # only used where it reads against the default bg
+_COLOR_ASSISTANT = -1          # default text
+_COLOR_MUTED = 0x9A9A9A
+_COLOR_ACCENT = 0xC96442       # the send button's fill
+_COLOR_ACCENT_TEXT = 0xFFFFFF
+
+_MESSAGE_PAD = 90              # space around a message's text inside its bubble
+_MESSAGE_GAP = 200             # space between two messages
 # Real family names, taken from `fc-match` rather than from habit. The obvious
 # guesses ("Liberation Sans" / "Liberation Mono") are only aliases on this
 # platform; fc-match reports Noto Sans and DejaVu Sans Mono as what actually
@@ -119,11 +148,7 @@ _FALLBACK_WIDTH = 240
 _TRANSCRIPTS = {}
 _DEFAULT_KEY = "(no document)"
 
-# Bump when the greeting's wording changes. Cached conversations are keyed by
-# document URL and survive code reloads, so without this a stale greeting is shown
-# for every document that was ever opened. That is exactly what happened: the
-# panel kept displaying an instruction to run a script that no longer exists.
-_GREETING_VERSION = 2
+
 
 # ---------------------------------------------------------------------------
 # Thread hand-off.
@@ -175,38 +200,6 @@ def _doc_name(frame):
         return url.rsplit("/", 1)[-1] or "this untitled document"
     except Exception:
         return "this document"
-
-
-def _greeting(frame):
-    """The opening line of a conversation.
-
-    States what the agent is looking at and what it can do, then stops. It is not
-    a question: an empty box with a question in it invites typing, whereas this
-    reads as the top of a thread already in progress.
-    """
-    base = ("Working on %s. I can read it, edit it, restructure it, and check "
-            "how the result looks — everything I change in one go is a single "
-            "undo step." % _doc_name(frame))
-    status = _service_status()
-    if status is None:
-        # Deliberately does NOT name a command to run. The panel starts the
-        # runtime itself on the next message; an earlier version told the reader
-        # to run a script that has since been deleted, and because the greeting
-        # is cached per document that stale instruction survived a code change.
-        return base + (" Send a message and I will start up. If nothing "
-                       "happens, see ~/.cache/cowork-sidebar.log")
-    if not status.get("runtime"):
-        return base + " The Cowork runtime is running but not ready yet."
-    return base + " Tell me what you want done."
-
-
-def _service_status():
-    """Probe the service once per panel build. None means unreachable."""
-    try:
-        reply = AgentClient().ping()
-    except Exception:
-        return None
-    return reply if reply.get("reachable") else None
 
 
 class _RelayoutListener(unohelper.Base, XWindowListener):
@@ -611,13 +604,11 @@ class CoworkUIElement(unohelper.Base, XUIElement):
 
         # Seed the conversation the first time this document is seen, so the
         # panel never opens blank.
-        key = _doc_key(self.frame)
-        cached = _TRANSCRIPTS.get(key)
-        if cached is None or any(e.get("greeting") not in (None, _GREETING_VERSION)
-                                 for e in cached):
-            _TRANSCRIPTS[key] = [{"kind": "cowork",
-                                  "text": _greeting(self.frame),
-                                  "greeting": _GREETING_VERSION}]
+        # No seeded greeting. The opening view is the empty state, which is
+        # drawn rather than stored, so nothing has to be invalidated when its
+        # wording changes — the earlier design cached a greeting per document and
+        # kept showing stale text after the code moved on.
+        _TRANSCRIPTS.setdefault(_doc_key(self.frame), [])
         self._render()
 
         self._resize_listener = _RelayoutListener(self)
@@ -722,9 +713,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         conversation instead of a wall of text, and so a progress line can be
         replaced in place rather than appended.
         """
-        return _TRANSCRIPTS.setdefault(
-            _doc_key(self.frame),
-            [{"kind": "cowork", "text": _greeting(self.frame)}])
+        return _TRANSCRIPTS.setdefault(_doc_key(self.frame), [])
 
     # -- rendering the conversation ------------------------------------ //
 
@@ -732,6 +721,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
     # window's units (1/100 mm), so heights are converted.
     _STYLE = {
         markdown.SPEAKER:   {"weight": 150.0, "size": 9,  "mono": False, "indent": 0},
+        "note":             {"weight": 100.0, "size": 9,  "mono": False, "indent": 0},
         markdown.HEADING:   {"weight": 150.0, "size": 11, "mono": False, "indent": 0},
         markdown.PARAGRAPH: {"weight": 100.0, "size": 10, "mono": False, "indent": 0},
         markdown.BULLET:    {"weight": 100.0, "size": 10, "mono": False, "indent": 12},
@@ -766,56 +756,68 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         """Every message's blocks, with speaker labels between them."""
         blocks = []
         for entry in self._entries():
-            kind = entry.get("kind")
-            for block in self._parsed(entry, 0):
+            parsed = self._parsed(entry, 0)
+            # A chat does not label the assistant. Its replies are plain text and
+            # the user's messages are the ones that need distinguishing, so the
+            # speaker is carried on the block rather than rendered as a heading —
+            # which is what Claude for Word does and what a transcript with
+            # "Cowork:" above every reply does not.
+            for block in parsed:
+                block = dict(block)
+                block["who"] = entry.get("kind")
                 blocks.append(block)
-            if kind in ("you", "cowork") and blocks:
-                blocks.insert(len(blocks) - len(self._parsed(entry, 0)),
-                              {"kind": markdown.SPEAKER,
-                               "runs": [{"text": "You" if kind == "you" else "Cowork",
-                                         "bold": False, "italic": False,
-                                         "mono": False}]})
         return blocks
 
     def _render(self):
-        """Draw the conversation as a stack of styled labels.
+        """Draw the conversation as chat bubbles.
 
-        Each run becomes its own label so emphasis and monospace can be per-run —
-        a control's font applies to the whole control, which is exactly why the
-        conversation is not one text box. Heights are computed rather than
-        measured: the toolkit cannot report a label's natural height, so text is
-        hard-wrapped to a character grid and the height derived from line count.
+        Shape follows Claude for Word's task pane: the assistant's replies are
+        plain text on the panel background, and the USER's messages sit in a
+        tinted, rounded, right-inset bubble. That is the whole trick — a
+        transcript that labels both speakers reads like a log, while a bubble on
+        one side and plain text on the other reads like a conversation.
+
+        Each styled run becomes its own label, because a control's font applies to
+        the whole control and that is why the conversation is not one text box.
+        Heights are computed rather than measured, so text is hard-wrapped to a
+        character grid.
         """
         container = self._control_by_name("pnlTranscript")
         if container is None:
             return
-        # Wrap against the width the panel was LAID OUT at: the container is
-        # created while the sidebar is still 0x0, so its reported width can be a
-        # stale default and the text then wraps to a width nobody will see.
         width = self._transcript_width or container.getPosSize().Width or _FALLBACK_WIDTH
         inner = max(width - 2 * _MARGIN, 60)
-        columns = max(int(inner / _CHAR_WIDTH), 16)
+        # Bubbles are inset, so they wrap in less width than the panel has.
+        columns = max(int((inner - _MESSAGE_PAD) / _CHAR_WIDTH), 16)
 
-        # Each item is one line of one run: (block, style-ish, text).
-        items = []
+        # Build a line list, remembering which message each line belongs to so a
+        # user bubble can be drawn behind its own lines.
+        lines = []
         previous = None
         for block in self._blocks():
             style = self._STYLE.get(block["kind"], self._STYLE[markdown.PARAGRAPH])
-            indent = style["indent"]
-            available = max(columns - 2, 8)
             text = "".join(run["text"] for run in block.get("runs", []))
             if block["kind"] == markdown.RULE:
-                text = "─" * min(available, 40)
-            for line in self._wrap(text, available):
-                items.append((block, style, indent, line))
+                text = "─" * min(columns, 40)
+            gap = markdown.gap_before(block, previous)
+            if block.get("who") != (previous or {}).get("who"):
+                gap = _MESSAGE_GAP
+            first = True
+            for line in self._wrap(text, columns):
+                lines.append({"who": block.get("who"), "kind": block["kind"],
+                              "style": style, "text": line,
+                              "gap": gap if first else 0,
+                              "height": _row_height(style["size"])})
+                first = False
             previous = block
-            _ = previous
+        if not lines:
+            self._render_empty_state(container, inner)
+            return
 
-        # Reuse the labels we already have; add only what we need.
-        while len(self._transcript_rows) < len(items):
+        while len(self._transcript_rows) < len(lines):
             row = self._new("UnoControlFixedText")
             model = self._new("UnoControlFixedTextModel")
-            model.MultiLine = False        # one line per label keeps height exact
+            model.MultiLine = False
             model.Align = 0
             model.Label = ""
             row.setModel(model)
@@ -825,7 +827,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                 _log(traceback.format_exc())
             self._transcript_rows.append(row)
 
-        total = _MARGIN + len(items) * _ROW_HEIGHT + _MARGIN
+        total = _MARGIN + sum(l["gap"] + l["height"] for l in lines) + _MARGIN
         self._transcript_height = total
         view = container.getPosSize().Height or 200
         self._set_scroll_range(total, view)
@@ -833,26 +835,34 @@ class CoworkUIElement(unohelper.Base, XUIElement):
 
         y = _MARGIN - offset
         index = 0
-        for block, style, indent, line in items:
+        for line in lines:
+            y += line["gap"]
             if index >= len(self._transcript_rows):
                 break
             row = self._transcript_rows[index]
-            model = row.getModel()
+            style = line["style"]
             try:
-                model.Label = line
+                model = row.getModel()
+                model.Label = line["text"]
                 model.FontWeight = 150.0 if style["weight"] >= 150.0 else 100.0
                 model.FontHeight = style["size"]
                 model.FontName = _MONO_FONT if style["mono"] else _SANS_FONT
-                model.TextColor = 0x888888 if block["kind"] == markdown.SPEAKER else -1
+                model.TextColor = _COLOR_MUTED if line["kind"] == markdown.SPEAKER else -1
+                # The user's own words are tinted and indented, so the eye can
+                # find them without a label.
+                model.BackgroundColor = (_COLOR_USER_BUBBLE if line["who"] == "you"
+                                         else _COLOR_BG)
             except Exception:
                 _log(traceback.format_exc())
-            if y + _ROW_HEIGHT < 0 or y > view:
+
+            indent = _MARGIN + (style["indent"] if line["who"] != "you" else _MESSAGE_PAD)
+            available = max(inner - (indent - _MARGIN) - _MESSAGE_PAD, 40)
+            if y + line["height"] < 0 or y > view:
                 row.setVisible(False)
             else:
-                row.setPosSize(_MARGIN + indent, y,
-                               max(inner - indent, 40), _ROW_HEIGHT, POSSIZE)
+                row.setPosSize(indent, y, available, line["height"], POSSIZE)
                 row.setVisible(True)
-            y += _ROW_HEIGHT
+            y += line["height"]
             index += 1
 
         for row in self._transcript_rows[index:]:
@@ -861,12 +871,98 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             except Exception:
                 pass
 
-    def _scroll_to_newest(self):
-        """Keep the newest message in view when the conversation grows."""
-        container = self._control_by_name("pnlTranscript")
-        view = container.getPosSize().Height if container is not None else 0
-        self._scroll_offset = max(self._transcript_height - (view or 0), 0)
-        self._render()
+    # Suggestions for the opening view. Claude for Word offers four chips that are
+    # one click from a useful request; these are the same idea for a document.
+    _SUGGESTIONS = (
+        "Summarise this document",
+        "Review it for problems",
+        "Improve the wording",
+        "What still needs doing?",
+    )
+
+    def _render_empty_state(self, container, inner):
+        """The opening view: a prompt in the upper third, suggestions near the foot.
+
+        Laid out against the VIEW, not stacked from the top. The first attempt
+        added up the row heights and let the heading fall wherever that landed,
+        which put it at y=934 inside a 607-unit pane — off screen entirely, so the
+        panel looked empty except for the file name. Claude for Word's empty state
+        is a centred prompt with chips beneath it, and both need to be positioned
+        relative to the space available rather than allowed to flow.
+        """
+        view = container.getPosSize().Height or 400
+
+        # Sizes in points; heights in the container's units.
+        title = {"text": "How can I help with this document?", "size": 12,
+                 "weight": 150.0, "colour": -1, "centre": True}
+        subtitle = {"text": _doc_name(self.frame), "size": 9,
+                    "weight": 100.0, "colour": _COLOR_MUTED, "centre": True}
+        chips = [{"text": t, "size": 10, "weight": 100.0, "colour": -1,
+                  "centre": True} for t in self._SUGGESTIONS]
+
+        # The whole block is CENTRED vertically in whatever space there is.
+        #
+        # Two earlier attempts positioned it badly and both looked like a
+        # rendering failure: flowing it from the top put the heading at y=934
+        # inside a 607-unit pane, and anchoring the chips to the foot used
+        # `max(subtitle + 200, view - chips - 120)`, which for a 760-unit view put
+        # every chip below the fold. Centring needs no such reasoning and is
+        # correct at any pane height.
+        block = ([title, subtitle]
+                 + [{"text": "", "size": 6, "weight": 100.0, "colour": -1,
+                     "centre": True}]
+                 + chips)
+        for spec in block:
+            spec.setdefault("height", _row_height(spec["size"]))
+
+        total = sum(spec["height"] + 40 for spec in block)
+        y = max(int((view - total) / 2), _MARGIN)
+        placed = []
+        for spec in block:
+            placed.append((spec, y))
+            y += spec["height"] + 40
+
+        while len(self._transcript_rows) < len(placed):
+            row = self._new("UnoControlFixedText")
+            model = self._new("UnoControlFixedTextModel")
+            model.MultiLine = False
+            model.Align = 2                      # centred
+            model.Label = ""
+            row.setModel(model)
+            try:
+                container.addControl("row%d" % len(self._transcript_rows), row)
+            except Exception:
+                _log(traceback.format_exc())
+            self._transcript_rows.append(row)
+
+        # No scrolling: the empty state fits the pane by construction.
+        self._transcript_height = view
+        self._set_scroll_range(view, view)
+
+        index = 0
+        for spec, spec_y in placed:
+            if index >= len(self._transcript_rows):
+                break
+            row = self._transcript_rows[index]
+            try:
+                model = row.getModel()
+                model.Label = spec["text"]
+                model.Align = 2
+                model.FontWeight = spec["weight"]
+                model.FontHeight = spec["size"]
+                model.FontName = _SANS_FONT
+                model.TextColor = spec["colour"]
+                model.BackgroundColor = _COLOR_BG
+            except Exception:
+                _log(traceback.format_exc())
+            row.setPosSize(_MARGIN, spec_y, max(inner, 40), spec["height"], POSSIZE)
+            row.setVisible(True)
+            index += 1
+        for row in self._transcript_rows[index:]:
+            try:
+                row.setVisible(False)
+            except Exception:
+                pass
 
     def _set_scroll_range(self, total, view):
         bar = self._control_by_name("scrTranscript")
@@ -1092,10 +1188,8 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             _log("addCallback failed:\n%s" % traceback.format_exc())
 
     def clear(self):
-        """Start a fresh thread for this document."""
-        _TRANSCRIPTS[_doc_key(self.frame)] = [
-            {"kind": "cowork", "text": _greeting(self.frame),
-             "greeting": _GREETING_VERSION}]
+        """Start a fresh conversation for this document."""
+        _TRANSCRIPTS[_doc_key(self.frame)] = []
         self._render()
 
     @staticmethod

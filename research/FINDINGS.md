@@ -1512,3 +1512,63 @@ Row spacing is looser than intended — the gap between a speaker label and its
 first line is visibly too large — so `_ROW_HEIGHT` and the `gap_before` values
 need tightening. The capture at this point shows text rendering correctly at the
 right size with emphasis preserved, which is the part that was broken.
+
+---
+
+# TOWARD A CHAT LOOK (in progress)
+
+Asked to look like Claude for Word / Copilot. Reference screenshots were fetched
+from GIGAZINE's coverage of Claude for Word, which shows both states clearly.
+
+## F42 — What the reference actually does
+
+From [Claude for Word screenshots](https://gigazine.net/gsc_news/en/20260413-claude-for-word/)
+and [Anthropic's own guidance](https://support.claude.com/en/articles/14465370-use-claude-for-word):
+
+* **The assistant's replies are plain text.** There is no "Claude:" label above
+  them. The *user's* messages are the ones that need distinguishing, and they sit
+  in a tinted, rounded bubble.
+* **The empty state is centred**: a mark, "How can I help with this document?",
+  then four suggestion chips one click from a useful request.
+* **The composer is a boxed field** with a `+` for attachments on the left, a
+  "Reply" placeholder, a model picker ("Sonnet ⌄"), and a **filled** send button
+  on the right — not a bare text field with two labelled buttons beneath it.
+* Generous whitespace; light neutral surfaces; links in blue.
+
+Copilot's guidance agrees on the principle: *"opens a side pane that works
+directly with your document: not just as chat, but as an editing partner … with
+clear signals so you always know what it's doing"*
+([Microsoft 365 blog](https://www.microsoft.com/en-us/microsoft-365/blog/2026/05/28/introducing-a-new-design-for-microsoft-365-copilot/)).
+
+## F43 — What changed
+
+* **The "Cowork:" prefix is gone.** Speaker is carried on the block and the
+  *user's* lines are tinted and inset instead. A transcript that labels both
+  speakers reads like a log; a bubble on one side and plain text on the other
+  reads like a conversation.
+* **The seeded greeting is gone.** It was prose pretending to be a message, it
+  scrolled away, and caching it per document is what produced the stale
+  `cowork_agent.py` text earlier. The opening view is now drawn as an empty state.
+* **Row heights derive from the font** (`size * 0.3528 + 2mm`). A single constant
+  cannot fit a 9pt caption and a 12pt heading: too small and lines overlap, too
+  large and everything is padded with dead space.
+
+## F44 — Where this stands, honestly
+
+The chat *structure* is in place and the markdown rendering is verified working.
+The **empty state layout is not right yet**: the heading renders, but its
+subtitle and the suggestion chips are not appearing where they should, and I have
+not found the cause.
+
+What I know: the rows are created and positioned (`row0 y=212 h=623`,
+`row1 y=875`, chips at y=1592+), the viewport is 760 units, so everything after
+the heading falls below the fold. Centring the block was supposed to fix exactly
+that and did not, which means my model of the available height is still wrong —
+most likely `container.getPosSize().Height` is not the height the rows are
+clipped to.
+
+**This is the point to step back rather than keep iterating.** Each check costs a
+rebuild, a sandbox restart and a minute of waiting, and I have made four attempts
+without converging. The honest summary: the panel is structurally a chat now, the
+formatting is right, and the empty state needs someone looking at it iteratively —
+which is cheap for a person with the panel open and expensive for me.
