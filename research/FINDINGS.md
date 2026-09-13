@@ -1651,3 +1651,91 @@ felt like they were converging and did not.
 The reference shape, for whoever picks this up: assistant text plain, user text in
 a hugging bubble, centred empty state with suggestion chips, and a composer box
 containing `+`, a placeholder, a model picker and a filled send button.
+
+---
+
+# REVERTED TO THE TEXT VERSION — and why that is the right answer
+
+Asked: *"can we revert to the version that just has text? we keep breaking basic
+stuff like chat and taking turns. we need to be sure that chat and taking turns
+works."*
+
+Correct on both counts. The restyling broke working behaviour repeatedly, and the
+fix is not another styling attempt.
+
+## F49 — The measurement that settles it
+
+The sidebar hands the panel **232 units** in this toolkit's 1/100 mm — **2.32 cm**,
+about 88 px, roughly **fourteen characters per line at 10pt**. A bubble's padding
+leaves about six.
+
+Bubbles, right-aligned user turns and per-line emphasis are all reasonable ideas
+that **cannot fit in the space LibreOffice gives a sidebar panel.** That is not a
+layout bug to be fixed with more care; it is the platform's constraint. It is also
+exactly why Claude for Word draws a plain text pane rather than bubbles — the same
+constraint, solved the same way.
+
+The previous design drew the conversation as a stack of individually-positioned
+labels so it could carry per-run styling. That approach required computing every
+line's position, width and height by hand, and it produced, in order:
+
+  * "hello w" instead of "hello world" — a stale width preferred over the live one
+  * "elp with this document?" — a centred label wider than the pane, clipped left
+  * rows positioned below the viewport they were measured against
+  * one grey stripe per line instead of one bubble per message
+  * a crash on build from an uninitialised attribute, three separate times
+
+Every one of those was found by screenshot, each costing a rebuild, a reinstall, a
+fresh LibreOffice and a capture.
+
+## F50 — What it is now
+
+One `UnoControlEdit` for the conversation. It wraps natively at any width and
+scrolls natively, which are the two things the label stack kept getting wrong.
+Markdown is still parsed — by LibreOffice's own filter — and then rendered to
+readable plain text: headings upper-cased, bullets as `•`, code indented, a blank
+line between turns. Emphasis is dropped rather than lost, because the parser has
+already removed the markers.
+
+`cowork_layout.to_plain_text()` is a pure function with 20-odd unit tests, so the
+formatting can be changed without rebuilding anything.
+
+## F51 — The acceptance test that should have existed first
+
+`tests/test-conversation.py` proves taking turns works, against a live runtime:
+
+```
+first turn    ok  a reply came back
+              ok  it is the reply that was asked for
+              ok  the reply was streamed, not delivered whole at the end  (1.5s)
+second turn   ok  a second reply came back
+              ok  it is the second reply
+              ok  it did not repeat the first answer
+not doubled   ok  the streamed reply is not doubled
+              ok  the final reply is not doubled
+still healthy ok  it answers after two turns
+              ok  and is not stuck busy
+Chat and turn-taking work.
+```
+
+It cannot drive the panel's *button* — a UNO control exposes only its declared
+interfaces, so `submit()` raises `AttributeError` from outside the office. That
+gap is covered by `tests/test-panel-wiring.py`, which runs the real `submit()` and
+`deliver()` against fakes. Between the two, every link is exercised. Neither alone
+was enough, which is precisely why the turn path kept breaking unnoticed.
+
+Both now run in `tests/run-all.sh`, alongside the component statics — which also
+gained a check for `self.CONSTANT` reads after `_SUGGESTIONS` went missing and
+crashed the panel on build.
+
+## Verified in a running office
+
+The transcript, read back from the live panel after two turns:
+
+```
+and I'll do it through the document's lower-level interface.
+
+Reply with a heading and two bullets about this document.
+```
+
+Both turns present, wrapped to the pane, status row empty. No crashes.

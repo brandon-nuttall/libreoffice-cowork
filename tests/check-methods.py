@@ -66,11 +66,40 @@ def main():
                 # somewhere; only a method CALL with no definition is an error.
                 failures.append("%s: self.%s() is not defined" % (node.name, called))
 
+    # Class attributes read through self — uppercase by convention — must exist on
+    # the class too. `self._SUGGESTIONS` went missing during an edit and crashed the
+    # panel on build with AttributeError, exactly like a missing method.
+    for name in sorted(os.listdir(COMPONENTS)):
+        if not name.endswith(".py"):
+            continue
+        with open(os.path.join(COMPONENTS, name), encoding="utf-8") as handle:
+            tree = ast.parse(handle.read())
+        defined = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        defined.add(target.id)
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                defined.add(node.target.id)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            bases = [b.id for b in node.bases if isinstance(b, ast.Name)]
+            if any(b not in KNOWN_BASES and not b[0].isupper() for b in bases):
+                continue
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Attribute) and isinstance(sub.ctx, ast.Load):
+                    if (isinstance(sub.value, ast.Name) and sub.value.id == "self"
+                            and sub.attr.isupper() and sub.attr not in defined):
+                        failures.append("%s: self.%s is not defined"
+                                        % (node.name, sub.attr))
+
     if failures:
         for line in sorted(set(failures)):
             print("  FAIL " + line)
         return 1
-    print("  ok   every self.method() call has a definition")
+    print("  ok   every self.method() and self.CONSTANT has a definition")
     return 0
 
 

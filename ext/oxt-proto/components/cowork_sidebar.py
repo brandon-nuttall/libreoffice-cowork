@@ -52,6 +52,14 @@ from com.sun.star.ui.UIElementType import TOOLPANEL
 # The client is plain Python with no UNO dependency, so the streaming path can
 # be tested against a live service without a GUI.
 try:
+    import cowork_layout as layout
+except ImportError:
+    import os as _os
+    import sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    import cowork_layout as layout
+
+try:
     import cowork_markdown as markdown
 except ImportError:  # the extension dir is not always on sys.path
     import os as _os
@@ -506,41 +514,27 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         # no rich-text control available (UnoControlRichText returns None from
         # this context, like com.sun.star.awt.Timer). Per-control formatting is
         # what the toolkit does support, so each block becomes its own label.
-        # UnoControlContainer has no scroll properties at all — its model carries
-        # only Border, BackgroundColor, Text and friends — so scrolling is a real
-        # scrollbar beside it plus an offset applied to the labels. That is how
-        # this toolkit does it; there is no scrolling container to lean on.
-        self._control(container, "pnlTranscript", "UnoControlContainer",
-                      "UnoControlContainerModel", Border=True)
-        bar = self._control(container, "scrTranscript", "UnoControlScrollBar",
-                            "UnoControlScrollBarModel",
-                            Orientation=1, ScrollValue=0, ScrollValueMin=0,
-                            ScrollValueMax=100, VisibleSize=100, LineIncrement=1,
-                            BlockIncrement=10)
-        if bar is not None:
-            scroll_listener = _ScrollListener(self)
-            try:
-                bar.addAdjustmentListener(scroll_listener)
-                self._listeners.append(scroll_listener)
-            except Exception:
-                _log("could not attach the scroll listener:\n%s" % traceback.format_exc())
-        self._transcript_rows = []
-        # Bubbles are separate controls drawn behind the user's messages, so a
-        # multi-line message is one shape rather than a stripe per line.
-        self._transcript_bubbles = []
-        self._scroll_offset = 0
-        self._transcript_height = 0
-        self._transcript_width = 0
-        self._transcript_view = 0
+        # The conversation is ONE text control.
+        #
+        # This replaced a stack of individually-positioned labels that could carry
+        # per-run styling and chat bubbles. That approach cannot work here: the
+        # sidebar hands the panel 232 units (2.32 cm, about 88 px, roughly fourteen
+        # characters per line at 10pt), so a bubble's padding leaves six. Bubbles
+        # are a fine idea that does not fit — which is why Claude for Word uses a
+        # single plain text pane rather than bubbles.
+        #
+        # A text control also does, natively, the two things the label stack kept
+        # getting wrong: it wraps at any width, and it scrolls.
+        self._control(container, "txtTranscript", "UnoControlEdit",
+                      "UnoControlEditModel",
+                      MultiLine=True,
+                      ReadOnly=True,
+                      VScroll=True,
+                      AutoVScroll=True,
+                      Border=True,
+                      HideInactiveSelection=False,
+                      Tabstop=True)
 
-        # MultiLine + no horizontal scroll: a single-line field scrolls the text
-        # sideways as you type, so anything longer than the box width is
-        # invisible. Wrapping keeps the whole message readable.
-        # A single status line. Deliberately NOT a progress bar: completion is
-        # not deterministic — nobody knows how many tool calls a request will
-        # take — so a bar filling toward a finish line would be a lie. What the
-        # reader wants is evidence of forward momentum, which is what a label
-        # naming the current step plus an elapsed count gives.
         self._control(container, "lblStatus", "UnoControlFixedText",
                       "UnoControlFixedTextModel",
                       Label="", MultiLine=False, Align=0)
@@ -660,13 +654,9 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             transcript_y = _MARGIN
             transcript_h = max(status_y - _GAP - transcript_y, 60)
 
-            bar_w = 14
-            self._transcript_width = max(inner - bar_w - _GAP, 40)
+            self._transcript_width = inner
             self._transcript_view = transcript_h
-            self._place("pnlTranscript", _MARGIN, transcript_y,
-                        self._transcript_width, transcript_h)
-            self._place("scrTranscript", _MARGIN + inner - bar_w, transcript_y,
-                        bar_w, transcript_h)
+            self._place("txtTranscript", _MARGIN, transcript_y, inner, transcript_h)
             self._place("lblStatus", _MARGIN, status_y, inner, _STATUS_HEIGHT)
             self._place("txtComposer", _MARGIN, composer_y, inner, _COMPOSER_HEIGHT)
             half = max((inner - _GAP) // 2, 30)
@@ -773,398 +763,13 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                 blocks.append(block)
         return blocks
 
-    def _render(self):
-        """Draw either the empty state or the conversation.
-
-        One mode at a time, into one pool of labels. The empty state used to be
-        drawn into the transcript whenever there were no messages, which meant a
-        conversation inherited the empty state's centred rows and its generous
-        gaps — visible as two words far apart down an otherwise blank panel.
-        """
-        container = self._control_by_name("pnlTranscript")
-        if container is None:
-            return
-        # Prefer the LIVE container size, falling back to the last layout pass and
-        # then to a guess.
-        #
-        # This was backwards, and it produced the worst bug of the whole panel:
-        # `self._transcript_width` is captured during a layout pass, and one of the
-        # early passes happens while the sidebar is still at its 92-unit minimum.
-        # Preferring that cached value wrapped every message at 16 columns, so
-        # "hello world" rendered as "hello w" and the conversation looked cut off
-        # no matter how wide the sidebar was.
-        live = container.getPosSize()
-        view = live.Height or self._transcript_view or 400
-        width = live.Width or self._transcript_width or _FALLBACK_WIDTH
-        inner = max(width - 2 * _MARGIN, 60)
-
-        if not self._entries():
-            self._render_empty_state(container, inner, view)
-            return
-        self._render_messages(container, inner, view)
-
-    def _render_messages(self, container, inner, view):
-        """The conversation, as chat rows.
-
-        Shape follows Claude for Word's task pane: the assistant's replies are
-        plain text on the panel background, and the USER's messages sit in a
-        tinted bubble. That is the whole trick — a transcript that labels both
-        speakers reads like a log, while a bubble on one side and plain text on
-        the other reads like a conversation.
-        """
-        columns = max(int((inner - 40) / _CHAR_WIDTH), 16)
-
-        lines = []
-        previous = None
-        for block in self._blocks():
-            style = self._STYLE.get(block["kind"], self._STYLE[markdown.PARAGRAPH])
-            text = "".join(run["text"] for run in block.get("runs", []))
-            if block["kind"] == markdown.RULE:
-                text = "─" * min(columns, 40)
-            gap = markdown.gap_before(block, previous)
-            if block.get("who") != (previous or {}).get("who"):
-                gap = _MESSAGE_GAP
-            first = True
-            for line in self._wrap(text, columns):
-                lines.append({"who": block.get("who"), "kind": block["kind"],
-                              "style": style, "text": line,
-                              "gap": gap if first else 0,
-                              "height": _row_height(style["size"])})
-                first = False
-            previous = block
-
-        # Nothing to draw: leave the pool alone rather than hiding it. An empty
-        # render used to fall through and hide every row, and because renders
-        # happen on scroll and on every status change, a later empty pass would
-        # wipe a conversation that had just been drawn correctly.
-        if not lines:
-            return
-        self._ensure_rows(container, len(lines))
-        total = _MARGIN + sum(l["gap"] + l["height"] for l in lines) + _MARGIN
-        self._transcript_height = total
-        self._set_scroll_range(total, view)
-        offset = 0 if os.environ.get("COWORK_SCROLL_TOP") else self._scroll_offset
-
-        # A message is ONE bubble, so its lines are grouped first and a single
-        # background is drawn behind the group. Drawing a bubble per line gave a
-        # stack of separate grey blocks for a two-line message.
-        groups = []
-        for line in lines:
-            if groups and groups[-1]["who"] == line["who"] \
-                    and groups[-1]["kind"] == line["kind"]:
-                groups[-1]["lines"].append(line)
-            else:
-                groups.append({"who": line["who"], "kind": line["kind"],
-                               "lines": [line], "gap": line["gap"]})
-
-        y = _MARGIN - offset
-        index = 0
-        bubble_index = 0
-        for group in groups:
-            y += group["gap"]
-            is_user = group["who"] == "you"
-            top = y
-            indent = _MARGIN + (_MESSAGE_PAD if is_user else 0)
-            available = max(inner - (indent - _MARGIN) - (_MESSAGE_PAD if is_user else 0),
-                            40)
-
-            for line in group["lines"]:
-                row = self._transcript_rows[index]
-                style = line["style"]
-                try:
-                    model = row.getModel()
-                    model.Label = line["text"]
-                    # Alignment lives on the model and the empty state centres
-                    # its own rows, so a message would otherwise inherit it.
-                    model.Align = 0
-                    model.FontWeight = 150.0 if style["weight"] >= 150.0 else 100.0
-                    model.FontHeight = style["size"]
-                    model.FontName = _MONO_FONT if style["mono"] else _SANS_FONT
-                    model.TextColor = -1
-                    # The bubble is drawn as a separate control behind the group,
-                    # not as each row's background, so a multi-line message is one
-                    # shape rather than a stripe per line.
-                    model.BackgroundColor = _COLOR_BG
-                except Exception:
-                    _log(traceback.format_exc())
-                if y + line["height"] < 0 or y > view:
-                    row.setVisible(False)
-                else:
-                    row.setPosSize(indent, y, available, line["height"], POSSIZE)
-                    row.setVisible(True)
-                y += line["height"]
-                index += 1
-
-            if is_user:
-                height = y - top
-                if bubble_index >= len(self._transcript_bubbles):
-                    bubble = self._new("UnoControlFixedText")
-                    model = self._new("UnoControlFixedTextModel")
-                    model.Label = ""
-                    model.Enabled = False
-                    bubble.setModel(model)
-                    try:
-                        container.addControl("bubble%d" % len(self._transcript_bubbles),
-                                             bubble)
-                    except Exception:
-                        _log(traceback.format_exc())
-                    self._transcript_bubbles.append(bubble)
-                bubble = self._transcript_bubbles[bubble_index]
-                bubble_index += 1
-                try:
-                    bubble.getModel().BackgroundColor = _COLOR_USER_BUBBLE
-                    if top + height < 0 or top > view:
-                        bubble.setVisible(False)
-                    else:
-                        # Raised slightly and inset, so the text sits inside it
-                        # rather than on its edge.
-                        bubble.setPosSize(_MARGIN, top - 24,
-                                          inner, height + 48, POSSIZE)
-                        bubble.setVisible(True)
-                except Exception:
-                    _log(traceback.format_exc())
-
-        self._hide_rows(index)
-        for stale in self._transcript_bubbles[bubble_index:]:
-            try:
-                stale.setVisible(False)
-            except Exception:
-                pass
-
-    def _ensure_rows(self, container, count):
-        while len(self._transcript_rows) < count:
-            row = self._new("UnoControlFixedText")
-            model = self._new("UnoControlFixedTextModel")
-            model.MultiLine = False
-            model.Align = 0
-            model.Label = ""
-            row.setModel(model)
-            try:
-                container.addControl("row%d" % len(self._transcript_rows), row)
-            except Exception:
-                _log(traceback.format_exc())
-            self._transcript_rows.append(row)
-
-    def _hide_rows(self, from_index):
-        for row in self._transcript_rows[from_index:]:
-            try:
-                row.setVisible(False)
-            except Exception:
-                pass
-
-    # Suggestions for the opening view. Claude for Word offers four chips that are
-    # one click from a useful request; these are the same idea for a document.
-    _SUGGESTIONS = (
-        "Summarise this document",
-        "Review it for problems",
-        "Improve the wording",
-        "What still needs doing?",
-    )
-
-    def _render_empty_state(self, container, inner, view):
-        """The opening view: a prompt above a few suggestions, vertically centred.
-
-        Laid out against the VIEW, and centred rather than flowed from the top.
-        Flowing it put the heading at y=934 inside a 607-unit pane, so the panel
-        looked empty apart from the file name; anchoring the chips to the foot
-        with `view - chips - 120` put every one below the fold instead. Centring
-        needs no such reasoning and is correct at any pane height.
-        """
-        title = {"text": "How can I help with this document?", "size": 12,
-                 "weight": 150.0, "colour": -1}
-        subtitle = {"text": _doc_name(self.frame), "size": 9,
-                    "weight": 100.0, "colour": _COLOR_MUTED}
-        chips = [{"text": t, "size": 10, "weight": 100.0, "colour": -1}
-                 for t in self._SUGGESTIONS]
-
-        block = [title, subtitle, {"text": "", "size": 5, "weight": 100.0,
-                                   "colour": -1}] + chips
-        for spec in block:
-            spec["height"] = _row_height(spec["size"])
-
-        total = sum(spec["height"] + 40 for spec in block)
-        y = max(int((view - total) / 2), _MARGIN)
-
-        self._ensure_rows(container, len(block))
-        # Bubbles belong to messages only; without this a bubble drawn for an
-        # earlier conversation stays on screen behind the empty state.
-        for bubble in self._transcript_bubbles:
-            try:
-                bubble.setVisible(False)
-            except Exception:
-                pass
-        self._transcript_height = view
-        self._set_scroll_range(view, view)
-
-        index = 0
-        for spec in block:
-            row = self._transcript_rows[index]
-            try:
-                model = row.getModel()
-                model.Label = spec["text"]
-                model.Align = 2                      # centred
-                model.FontWeight = spec["weight"]
-                model.FontHeight = spec["size"]
-                model.FontName = _SANS_FONT
-                model.TextColor = spec["colour"]
-                model.BackgroundColor = _COLOR_BG
-            except Exception:
-                _log(traceback.format_exc())
-            row.setPosSize(_MARGIN, y, max(inner, 40), spec["height"], POSSIZE)
-            row.setVisible(True)
-            y += spec["height"] + 40
-            index += 1
-        self._hide_rows(index)
-
-    def _scroll_to_newest(self):
-        """Keep the newest message in view when the conversation grows."""
-        container = self._control_by_name("pnlTranscript")
-        view = container.getPosSize().Height if container is not None else 0
-        self._scroll_offset = max(self._transcript_height - (view or 0), 0)
-        self._render()
-
-    def _set_scroll_range(self, total, view):
-        bar = self._control_by_name("scrTranscript")
-        if bar is None:
-            return
-        try:
-            model = bar.getModel()
-            maximum = max(total - view, 0)
-            model.ScrollValueMax = max(maximum, 1)
-            model.VisibleSize = min(view, max(total, 1))
-            if self._scroll_offset > maximum:
-                self._scroll_offset = maximum
-            model.ScrollValue = self._scroll_offset
-        except Exception:
-            _log(traceback.format_exc())
-
-    @staticmethod
-    def _wrap(text, columns):
-        """Hard-wrap to a character grid, preserving explicit newlines."""
-        columns = max(columns, 8)
-        out = []
-        for paragraph in text.split("\n"):
-            if not paragraph:
-                out.append("")
-                continue
-            line = ""
-            for word in paragraph.split(" "):
-                if not line:
-                    candidate = word
-                else:
-                    candidate = line + " " + word
-                if len(candidate) <= columns:
-                    line = candidate
-                else:
-                    if line:
-                        out.append(line)
-                    # A single word longer than the width is broken, not clipped.
-                    while len(word) > columns:
-                        out.append(word[:columns])
-                        word = word[columns:]
-                    line = word
-            if line:
-                out.append(line)
-        return out or [""]
-
-    def _append(self, speaker, message):
-        kind = {"You": "you", "Cowork": "cowork"}.get(speaker, "cowork")
-        entries = self._entries()
-        entries.append({"kind": kind, "text": message})
-        if len(entries) > 200:
-            del entries[:-200]
-        self._render()
-
-    # -- the progress row ---------------------------------------------- //
-
-    def _status_label(self):
-        """`Deep diving... 18s` — the label plus a clock, as DSH shows it."""
-        text = self._status_text or "Working…"
-        if self._turn_started:
-            seconds = int(time.time() - self._turn_started)
-            if seconds * 1000 >= _CLOCK_AFTER_MS:
-                if seconds < 60:
-                    text = "%s  %ds" % (text, seconds)
-                else:
-                    text = "%s  %d:%02d" % (text, seconds // 60, seconds % 60)
-        return text
-
-    def _start_ticker(self):
-        """Mark when the turn began, for the elapsed label.
-
-        There is no ticking timer: the turn runs inline, so a timer would not
-        fire until it finished. The elapsed time is computed whenever the status
-        row is redrawn, which happens on every tool call — and that is where the
-        useful reading is ("Checking the layout… 24s").
-        """
-        self._turn_started = time.time()
-
-    def _stop_ticker(self):
-        self._turn_started = 0.0
-
-    def _refresh_status_row(self):
-        """Draw the status line.
-
-        Empty unless there is something to say. An earlier version fell back to
-        "Working…" whenever the turn was busy, so clearing the status *before*
-        clearing the busy flag — the natural order at the end of a turn — redrew
-        "Working…" and left it on screen after the work had finished. Caught in a
-        capture: the reply was rendered and the row still read "Working…".
-        """
-        label = self._control_by_name("lblStatus")
-        if label is None:
-            return
-        try:
-            label.setText(self._status_label() if self._status_text else "")
-        except Exception:
-            _log(traceback.format_exc())
-
-    def _set_status(self, text):
-        """Show what is happening in the progress row.
-
-        Interim updates are evidence that work is happening, not conversation.
-        They go in the progress row rather than the transcript, so the exchange
-        is never buried under a list of "Reading…", "Checking…", "Running…".
-        """
-        self._status_text = text
-        self._refresh_status_row()
-
-    def _drop_status(self):
-        """Clear the progress row; the turn has produced real output."""
-        self._status_text = ""
-        self._refresh_status_row()
-
     # -- the turn ------------------------------------------------------- //
-
-    def _set_busy(self, busy, label="Send"):
-        """Reflect that a turn is running, and start or stop the clock.
-
-        The toolkit has no spinner, so the Send button is the indicator: a slow
-        turn with nothing changing is indistinguishable from a frozen
-        application. The status line is refreshed on the same transition.
-        """
-        self._busy = busy
-        if busy:
-            self._turn_started = time.time()
-        else:
-            self._turn_started = 0.0
-            self._status_text = ""
-        self._refresh_status_row()
-        button = self._controls.get("btnSend")
-        if button is None:
-            return
-        try:
-            button.getModel().Label = "Working…" if busy else label
-            button.getModel().Enabled = not busy
-        except Exception:
-            _log(traceback.format_exc())
 
     def submit(self):
         """Send the composer text as the next message in this conversation.
 
-        The turn runs on a worker thread. Running it here froze LibreOffice hard
-        enough for the desktop to offer a force-quit, so blocking the VCL thread
-        is not an option even though it would be simpler.
+        The turn runs on a worker thread: running it here froze LibreOffice hard
+        enough for the desktop to offer a force-quit.
         """
         composer = self._control_by_name("txtComposer")
         if composer is None or self._busy:
@@ -1182,7 +787,6 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             _log(traceback.format_exc())
 
         self._append("You", text)
-        self._scroll_to_newest()
         self._set_busy(True)
         try:
             worker = threading.Thread(target=_turn_worker, args=(self, text),
@@ -1194,9 +798,8 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             self._append("Cowork", "Could not start the request: %s" % exc)
             self._set_busy(False)
 
-    # -- applying worker output (GUI thread only) ----------------------- //
-
     def deliver(self, item):
+        """Apply one worker event. Runs on the GUI thread only."""
         kind = item[0]
         if kind == "chunk":
             piece = item[1]
@@ -1209,19 +812,14 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             self._entries()[-1]["text"] += piece
             self._render()
         elif kind == "tool":
-            # Progress belongs in the row, never in the conversation.
             self._streaming = False
             self._set_status(item[1] or "Working…")
         elif kind == "final":
             self._streaming = False
             self._set_busy(False)
             self._drop_status()
-            if item[1] and self._entries() and self._entries()[-1]["kind"] == "cowork" \
-                    and not self._entries()[-1]["text"].strip() == "":
-                self._entries()[-1]["text"] = item[1]
-            elif item[1]:
+            if item[1]:
                 self._append("Cowork", item[1])
-            self._render()
         elif kind == "error":
             self._streaming = False
             self._set_busy(False)
@@ -1231,7 +829,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             self._pump_once()
 
     def _pump_once(self):
-        """Drain the queue onto this thread, then ask for another pass."""
+        """Drain the queue onto this thread."""
         for item in _drain():
             try:
                 self.deliver(item)
@@ -1251,7 +849,146 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         _TRANSCRIPTS[_doc_key(self.frame)] = []
         self._render()
 
-    @staticmethod
+    def _set_busy(self, busy, label="Send"):
+        """Reflect that a turn is running, and run the elapsed clock.
+
+        The toolkit has no spinner, so the Send button is the indicator: a slow
+        turn with nothing changing is indistinguishable from a frozen application.
+        """
+        self._busy = busy
+        if busy:
+            self._turn_started = time.time()
+        else:
+            self._turn_started = 0.0
+            self._status_text = ""
+        self._refresh_status_row()
+        button = self._controls.get("btnSend")
+        if button is None:
+            return
+        try:
+            button.getModel().Label = "Working…" if busy else label
+            button.getModel().Enabled = not busy
+        except Exception:
+            _log(traceback.format_exc())
+
+    # -- conversation state --------------------------------------------- //
+
+    def _append(self, speaker, message):
+        kind = {"You": "you", "Cowork": "cowork"}.get(speaker, "cowork")
+        entries = self._entries()
+        entries.append({"kind": kind, "text": message})
+        if len(entries) > 200:
+            del entries[:-200]
+        self._render()
+
+    # -- the status row -------------------------------------------------- //
+
+    def _status_label(self):
+        """`Checking the layout… 24s` — the label plus an elapsed clock.
+
+        The clock appears only after 15 seconds, matching the harness's own
+        progress chrome: a count-up on a two-second call is noise, on a
+        thirty-second one it is the difference between working and hung.
+        """
+        text = self._status_text or "Working…"
+        if self._turn_started:
+            seconds = int(time.time() - self._turn_started)
+            if seconds * 1000 >= _CLOCK_AFTER_MS:
+                if seconds < 60:
+                    text = "%s  %ds" % (text, seconds)
+                else:
+                    text = "%s  %d:%02d" % (text, seconds // 60, seconds % 60)
+        return text
+
+    def _refresh_status_row(self):
+        """Draw the status line.
+
+        Empty unless there is something to say. An earlier version fell back to
+        "Working…" whenever the turn was busy, so clearing the status before
+        clearing the busy flag redrew "Working…" and left it on screen after the
+        work had finished.
+        """
+        label = self._control_by_name("lblStatus")
+        if label is None:
+            return
+        try:
+            label.setText(self._status_label() if self._status_text else "")
+        except Exception:
+            _log(traceback.format_exc())
+
+    def _set_status(self, text):
+        """Show what is happening, in the status row rather than the transcript.
+
+        Interim updates are evidence that work is happening, not conversation, so
+        they must not fill the pane and bury the exchange.
+        """
+        self._status_text = text
+        self._refresh_status_row()
+
+    def _drop_status(self):
+        """Clear the status row; the turn has produced real output."""
+        self._status_text = ""
+        self._refresh_status_row()
+
+    # Suggestions for the opening view. Claude for Word offers four chips that are
+    # one click from a useful request; these are the same idea for a document.
+    _SUGGESTIONS = (
+        "Summarise this document",
+        "Review it for problems",
+        "Improve the wording",
+        "What still needs doing?",
+    )
+
+    # -- rendering ------------------------------------------------------ //
+
+    def _render_empty_state(self, control, inner, view):
+        """The opening view, as text in the same control.
+
+        Centred prose rather than positioned labels: the panel is 2.3cm wide, so a
+        centred label is clipped on the left anyway, and a text control wraps.
+        """
+        lines = ["", "", "How can I help", "with this document?", "",
+                 _doc_name(self.frame), "", ""]
+        lines += ["  " + suggestion for suggestion in self._SUGGESTIONS]
+        try:
+            control.setText("\n".join(lines))
+            control.setSelection(uno.createUnoStruct(
+                "com.sun.star.awt.Selection", 0, 0))
+        except Exception:
+            _log(traceback.format_exc())
+
+    def _render_messages(self, control, inner, view):
+        """Write the conversation into the transcript as plain text.
+
+        Geometry, wrapping and scrolling are the control's business here, which is
+        the point: the label-stack renderer had to compute every line's position,
+        width and height by hand and got it wrong repeatedly in ways only a
+        screenshot revealed.
+        """
+        columns = max(int((inner - 20) / layout.CHAR_WIDTH), 8)
+        body = layout.to_plain_text(self._blocks(), columns)
+        try:
+            control.setText(body)
+            # A zero-width selection at the end is a caret; Selection(0, n) selects
+            # everything and paints the whole conversation in the selection colour.
+            control.setSelection(uno.createUnoStruct(
+                "com.sun.star.awt.Selection", len(body), len(body)))
+        except Exception:
+            _log(traceback.format_exc())
+
+    def _render(self):
+        """Draw either the empty state or the conversation, into one text control."""
+        control = self._control_by_name("txtTranscript")
+        if control is None:
+            return
+        live = control.getPosSize()
+        width = live.Width or self._transcript_width or _FALLBACK_WIDTH
+        inner = max(width - 2 * _MARGIN, 60)
+        if not self._entries():
+            self._render_empty_state(control, inner, live.Height)
+        else:
+            self._render_messages(control, inner, live.Height)
+
     def _describe_tool(name):
         """Turn a tool name into something a person understands.
 

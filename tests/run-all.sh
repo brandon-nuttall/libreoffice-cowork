@@ -27,8 +27,12 @@ run() {
 }
 
 run "component statics"  python3 tests/test-component-statics.py
+run "layout geometry"    python3 tests/test-layout.py
 run "block model"        python3 tests/test-markdown.py
 run "panel wiring"       python3 tests/test-panel-wiring.py
+# Needs a live runtime; says so and exits 0 when there is none, so it does not
+# make the suite depend on one being up.
+run "conversation"       python3 tests/test-conversation.py
 
 printf '\n\033[1m── installer syntax\033[0m\n'
 if bash -n setup.sh && bash -n tests/sandbox-ui.sh \
