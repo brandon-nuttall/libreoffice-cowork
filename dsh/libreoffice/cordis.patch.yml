@@ -71,6 +71,12 @@
     - id: cowork-office
       name: './cowork/cowork-office.mjs'
 
+    # The conversation endpoint, served from inside the runtime. This replaces the
+    # standalone cowork-agent service: same job, one fewer process, one fewer
+    # protocol, nothing extra to install.
+    - id: cowork-serve
+      name: './cowork/cowork-serve.mjs'
+
     # Tune the SDK server the sdk-app bundle already mounts. `name` is repeated
     # here deliberately: this is a fresh id in `insert`, not an override.
     - id: cowork-sdk-jsonrpc

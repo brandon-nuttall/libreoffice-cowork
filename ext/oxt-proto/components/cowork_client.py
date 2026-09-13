@@ -1,33 +1,43 @@
-"""Client for the `cowork-agent` service.
+"""Client for the Cowork runtime endpoint.
 
-The panel runs inside LibreOffice's embedded Python, which cannot spawn
-processes, so it talks to a small local service instead. That service owns the
-harness runtime and one conversation per document.
+The runtime serves the conversation itself, on loopback, from inside the process
+that owns the agent loop and the document tools. There is no separate agent
+service any more: it was a second process, a second protocol, a second thing to
+install, and it could run twice and collide on its port.
 
-This module deliberately has no UNO imports: it is plain Python so it can be
-tested against a live service without a GUI, which is the only way to be sure
-the streaming path works before it is wired into a control.
+The panel runs in LibreOffice's embedded Python, which cannot spawn the runtime,
+so when the endpoint does not answer this also starts it, via a launcher script
+bundled with the extension. That keeps the user-facing story to "open the panel":
+nothing to install, nothing to keep running by hand.
 
-Protocol: one JSON object per line on a loopback socket.
-    → {"id": 1, "op": "ask", "doc": "...", "text": "..."}
-    ← {"event": "started"} | {"event": "chunk", "text": "..."}
-      {"event": "tool", "name": "..."} | {"event": "done", "text": "..."}
+No UNO imports here on purpose — this is plain Python so the streaming path can be
+tested against a live runtime without a GUI.
 """
 
 import json
 import os
+import shutil
 import socket
+import subprocess
+import time
+import urllib.error
+import urllib.request
 
-DEFAULT_PORT = int(os.environ.get("COWORK_AGENT_PORT", "8765"))
+DEFAULT_PORT = int(os.environ.get("COWORK_PORT", "8765"))
 CONNECT_TIMEOUT = float(os.environ.get("COWORK_CONNECT_TIMEOUT", "3"))
 TURN_TIMEOUT = float(os.environ.get("COWORK_TURN_TIMEOUT", "900"))
 
 
 class AgentUnavailable(RuntimeError):
-    """The service is not reachable, or not ready.
+    """The endpoint is not reachable, with a message written for the reader."""
 
-    Carries a message written for the person reading the panel, not a log.
-    """
+
+def _port_open(port):
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=1).close()
+        return True
+    except OSError:
+        return False
 
 
 class AgentClient:
@@ -35,42 +45,46 @@ class AgentClient:
         self.host = host
         self.port = port or DEFAULT_PORT
 
-    # -- plumbing ------------------------------------------------------ //
-
-    def _request(self, payload, timeout=CONNECT_TIMEOUT):
-        try:
-            connection = socket.create_connection(
-                (self.host, self.port), timeout=timeout)
-        except OSError as exc:
-            raise AgentUnavailable(
-                "the Cowork service is not running on port %d (%s).\n\n"
-                "Start it with:\n"
-                "    python3 dsh/libreoffice/cowork/cowork_agent.py"
-                % (self.port, exc))
-        connection.settimeout(timeout)
-        return connection
+    # -- lifecycle ----------------------------------------------------- //
 
     def ping(self):
-        """Cheap liveness and readiness probe. Never raises for 'not running'."""
+        """Cheap readiness probe. Never raises for 'not running'."""
         try:
-            connection = self._request({"id": 1, "op": "ping"})
-        except AgentUnavailable:
+            with urllib.request.urlopen(
+                    "http://%s:%d/ping" % (self.host, self.port), timeout=CONNECT_TIMEOUT) as r:
+                body = json.loads(r.read().decode() or "{}")
+                body["reachable"] = True
+                return body
+        except Exception:
             return {"ok": False, "reachable": False, "runtime": False}
+
+    def ensure_running(self):
+        """Start the runtime if nothing is serving, and wait for it.
+
+        The launcher is idempotent — it exits immediately when the endpoint
+        already answers — so calling this on every failed connection is safe.
+        """
+        if _port_open(self.port):
+            return True
+        launcher = os.environ.get("COWORK_LAUNCHER") or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "cowork-runtime.sh")
+        if not os.path.exists(launcher):
+            return False
         try:
-            stream = connection.makefile("rw", encoding="utf-8", newline="\n")
-            stream.write(json.dumps({"id": 1, "op": "ping"}) + "\n")
-            stream.flush()
-            reply = json.loads(stream.readline() or "{}")
-            reply["reachable"] = True
-            return reply
-        except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "reachable": True, "runtime": False,
-                    "error": str(exc)}
-        finally:
-            try:
-                connection.close()
-            except Exception:
-                pass
+            os.chmod(launcher, 0o755)
+        except OSError:
+            pass
+        try:
+            subprocess.Popen(["/bin/sh", launcher],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+        except OSError:
+            return False
+        for _ in range(60):
+            if _port_open(self.port):
+                return True
+            time.sleep(0.5)
+        return False
 
     # -- the conversation ---------------------------------------------- //
 
@@ -78,34 +92,45 @@ class AgentClient:
         """Send one message and stream the reply.
 
         `on_event(kind, payload)` is called on the calling thread as events
-        arrive, with kind one of ``started``, ``chunk``, ``tool``, ``done``.
-        `should_stop()` is polled so a closed panel stops listening rather than
-        holding a turn open.
-
-        Returns the final assistant text.
+        arrive: ``started``, ``chunk``, ``tool``, ``done``.
         """
-        connection = self._request({"op": "ask"})
-        connection.settimeout(TURN_TIMEOUT)
-        stream = connection.makefile("rw", encoding="utf-8", newline="\n")
+        if not _port_open(self.port):
+            # First failure starts it; a second failure is a real error.
+            if not self.ensure_running():
+                raise AgentUnavailable(
+                    "the Cowork runtime is not running and could not be started.\n\n"
+                    "Start it by hand to see why:\n"
+                    "    %s" % os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)),
+                        "cowork-runtime.sh"))
+
+        payload = json.dumps({"doc": document, "text": text}).encode()
+        request = urllib.request.Request(
+            "http://%s:%d/ask" % (self.host, self.port), data=payload,
+            headers={"content-type": "application/json"})
+
         final = None
         try:
-            stream.write(json.dumps({
-                "id": 1, "op": "ask", "doc": document, "text": text,
-            }) + "\n")
-            stream.flush()
-            for line in stream:
+            response = urllib.request.urlopen(request, timeout=TURN_TIMEOUT)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode()[:300]
+            raise AgentUnavailable("the runtime refused the request: %s" % detail)
+        except Exception as exc:  # noqa: BLE001
+            raise AgentUnavailable("could not reach the runtime: %s" % exc)
+
+        try:
+            for raw in response:
                 if should_stop is not None and should_stop():
                     break
-                line = line.strip()
+                line = raw.decode("utf-8", "replace").strip()
                 if not line:
                     continue
                 try:
                     message = json.loads(line)
-                except Exception:
+                except ValueError:
                     continue
                 if message.get("ok") is False:
-                    raise AgentUnavailable(message.get("error")
-                                           or "the agent reported a failure")
+                    raise AgentUnavailable(message.get("error") or "the agent failed")
                 kind = message.get("event")
                 if kind == "done":
                     final = message.get("text", "")
@@ -114,8 +139,4 @@ class AgentClient:
                 on_event(kind, message)
             return final or ""
         finally:
-            try:
-                stream.close()
-                connection.close()
-            except Exception:
-                pass
+            response.close()

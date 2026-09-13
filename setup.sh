@@ -277,48 +277,16 @@ find_dsh_install_root() {
 
 # ── install ─────────────────────────────────────────────────────────────────
 
-install_agent_service() {
-  step "Installing the Cowork agent service"
-  # The panel runs inside LibreOffice's embedded Python, which cannot spawn
-  # processes, so the agent that owns the harness runtime is a separate service.
-  # Without it the panel can render but cannot answer.
-  local share="$HOME/.local/share/libreoffice-cowork"
-  mkdir -p "$share"
-  install -m 755 "$SRC/dsh/libreoffice/cowork/cowork_agent.py" "$share/cowork_agent.py"
-  install -m 644 "$SRC/dsh/libreoffice/cowork/uno_bridge.py" "$share/uno_bridge.py" 2>/dev/null || true
-  # The agent resolves the helper beside itself, but the profile copy is the one
-  # the document tools use; keep both in step by pointing at the installed profile.
-  ok "installed to $share"
-
-  if [ -z "${DSH_BIN:-}" ]; then
-    warn "no dsh binary known; the service will search for one at start"
+bundle_launcher() {
+  step "Bundling the runtime launcher"
+  # The panel cannot spawn the runtime (LibreOffice's embedded Python cannot), so
+  # the launcher travels with the extension and the panel runs it on demand.
+  # There is NO service to install and nothing to keep running by hand — the
+  # earlier design's systemd unit was a second process and a second failure mode.
+  if [ ! -f "$SRC/dsh/libreoffice/cowork/cowork-runtime.sh" ]; then
+    warn "launcher missing from the source tree"; return 0
   fi
-
-  if command -v systemctl >/dev/null && [ -d "$HOME/.config/systemd/user" -o -w "$HOME/.config" ]; then
-    local unit_dir="$HOME/.config/systemd/user"
-    mkdir -p "$unit_dir"
-    sed "s|ExecStart=%h/.local/share/libreoffice-cowork/cowork_agent.py|ExecStart=$share/cowork_agent.py|" \
-      "$SRC/dist/cowork-agent.service" > "$unit_dir/cowork-agent.service"
-    systemctl --user daemon-reload >/dev/null 2>&1 || true
-    if systemctl --user enable --now cowork-agent.service >/dev/null 2>&1; then
-      ok "systemd user service 'cowork-agent' enabled and started"
-      return
-    fi
-    warn "could not enable the systemd user service"
-  else
-    warn "no systemd user session here, so the agent will not start automatically"
-  fi
-
-  # Start it in the background anyway: a panel with no agent behind it is a
-  # dead panel, and that is a bad first impression.
-  if python3 "$share/cowork_agent.py" >/dev/null 2>&1 &
-  then
-    sleep 2
-    ok "agent started in the background (pid $!)"
-    say "      It will not survive a reboot; start it again, or use systemd."
-  else
-    say "      Start it with:  python3 $share/cowork_agent.py"
-  fi
+  ok "cowork-runtime.sh ships inside the .oxt"
 }
 
 build_oxt() {
@@ -423,27 +391,13 @@ verify() {
     die "the '$PROFILE_NAME' profile failed to compose (see above)"
   fi
 
-  # Does the agent service answer? This is the link the panel depends on, and
-  # the one most likely to be missing.
-  if command -v systemctl >/dev/null && systemctl --user is-active cowork-agent.service >/dev/null 2>&1; then
-    ok "the cowork-agent service is running"
+  # The runtime is started on demand by the panel, so it is not expected to be
+  # running now. Report whether its launcher is in place instead.
+  local launcher="$SRC/dsh/libreoffice/cowork/cowork-runtime.sh"
+  if [ -x "$launcher" ] || [ -f "$launcher" ]; then
+    ok "the runtime launcher is installed; the panel starts it when needed"
   else
-    local reachable
-    reachable="$(python3 - <<'PROBE' 2>/dev/null || true
-import socket
-try:
-    socket.create_connection(("127.0.0.1", 8765), timeout=2).close()
-    print("yes")
-except Exception:
-    print("no")
-PROBE
-)"
-    if [ "$reachable" = "yes" ]; then
-      ok "the cowork-agent service is answering on port 8765"
-    else
-      warn "the cowork-agent service is not running yet"
-      say "      The sidebar will tell you the same thing, and how to start it."
-    fi
+    warn "the runtime launcher is missing; the panel will not be able to start it"
   fi
 
   say ""
@@ -503,7 +457,7 @@ fi
 build_oxt
 install_oxt
 install_profile
-install_agent_service
+bundle_launcher
 verify
 
 say ""
@@ -513,9 +467,7 @@ say "Next:"
 say "  1. Start (or restart) LibreOffice and open a document."
 say "  2. Open the Cowork deck in the sidebar — ${B}View ▸ Sidebar ▸ Cowork${N}."
 say ""
-say "  The extension's bridge starts with LibreOffice. The ${B}cowork-agent${N} service"
-say "  must also be running — it is what actually reaches the model. If the"
-say "  sidebar says it cannot reach the service, start it with:"
-say "      python3 $HOME/.local/share/libreoffice-cowork/cowork_agent.py"
+say "  That is all: the panel starts the Cowork runtime itself the first time you"
+say "  send a message. There is no service to install and nothing to keep running."
 say ""
 say "${DIM}Uninstall any time with:  setup.sh --uninstall${N}"

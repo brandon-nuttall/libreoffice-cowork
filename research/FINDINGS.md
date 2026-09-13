@@ -1157,3 +1157,73 @@ is highlighted, clipped, or overlapping.
 The black rectangle seen in earlier captures is gone and was therefore an Xvfb
 repaint artefact rather than anything in the panel — worth remembering before
 chasing that class of thing.
+
+---
+
+# THE AGENT SERVICE IS GONE — one process, one port
+
+Reported as: *"why do we even need the cowork_agent as glue code? ideally we don't
+need a separate server as glue code or people aren't going to want to install or
+use it."*
+
+The user was right, and the immediate failure proved the point: the install had
+**two** `cowork-agent` processes, one of them an 18-hour-old systemd service, and
+the second died with `OSError: [Errno 98] Address already in use`. Two processes
+and two protocols for one conversation, a second thing to install, and a port that
+could collide with itself.
+
+## What the old shape was
+
+```
+panel → cowork-agent (socket, bespoke JSON) → runtime (SDK JSON-RPC stdio)
+      → dsh-uno helper (stdio) → LibreOffice (UNO)
+```
+
+Three processes, two protocols, a systemd unit, and a service that had to be
+running before anything worked.
+
+## What it is now
+
+```
+panel → runtime (HTTP on loopback) → dsh-uno helper (stdio) → LibreOffice (UNO)
+```
+
+`cowork-serve.mjs` is a profile row that serves the conversation **from inside the
+runtime**, where the agent loop, the tools and the skills already live. The
+standalone service, its systemd unit, and its bespoke protocol are all deleted.
+
+The panel still cannot spawn the runtime — LibreOffice's embedded Python cannot —
+so `cowork-runtime.sh` ships inside the `.oxt` and the panel runs it on demand.
+It is idempotent (exits at once if the endpoint answers) and detached.
+
+**Nothing to install. Nothing to keep running. No port to collide with.**
+
+## Verified
+
+```
+$ # nothing running, no service installed
+$ /ping → {"ok": false, "reachable": false}
+$ client.ask(...)          # the panel's own client, unchanged
+  [started]
+  streamed : 'CLIENT OK'
+  final    : 'CLIENT OK'
+```
+
+## Four API facts, each found by being wrong first
+
+1. **`ctx.agents.create({sessionId, meta, agentOptions})`** returns a handle whose
+   `.agent` is the agent. `agents.session(...)` does not exist.
+2. **The agent has no `prompt()`.** The SDK server queues messages with
+   `agent.followup(createUserMessage({content, source}))`. `session.prompt(...)`
+   was invented twice before reading the source.
+3. **Events arrive through the Cordis context**, not the session:
+   `ctx.on('session/event', (session, event) => …)` and
+   `ctx.on('agent/status', ({agent, status}) => …)`.
+4. **The sdk app exits on stdin EOF** (`exitOnStdinEnd`). Redirecting stdin from
+   `/dev/null` — the obvious way to detach — kills the runtime instantly. The
+   launcher holds stdin open through a FIFO with `tail -f /dev/null`; closing that
+   FIFO is also the clean shutdown path.
+
+A plain file log at `~/.cache/cowork-serve.log` records apply, listening and every
+request, because the row's failures are otherwise invisible: an early return on a
+missing service made an earlier version look like it had never been mounted.
