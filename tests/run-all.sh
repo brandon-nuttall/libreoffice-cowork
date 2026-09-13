@@ -33,6 +33,9 @@ run "panel wiring"       python3 tests/test-panel-wiring.py
 # Needs a live runtime; says so and exits 0 when there is none, so it does not
 # make the suite depend on one being up.
 run "conversation"       python3 tests/test-conversation.py
+# Needs an office with the extension AND a runtime, both targeting the same
+# office. Says so and exits 0 when they are not up.
+run "live edit + undo"   python3 tests/test-live-edit.py
 
 printf '\n\033[1m── installer syntax\033[0m\n'
 if bash -n setup.sh && bash -n tests/sandbox-ui.sh \

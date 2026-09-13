@@ -1739,3 +1739,63 @@ Reply with a heading and two bullets about this document.
 ```
 
 Both turns present, wrapped to the pane, status row empty. No crashes.
+
+---
+
+# THE CORE PROMISE, TESTED — and a targeting bug that mattered
+
+`tests/test-live-edit.py` now proves the claim the whole project rests on, rather
+than leaving it to hand checks:
+
+```
+the agent can see an open document          ok
+the document has the marker before we start ok
+the agent answered                          ok
+the first edit landed                       ok
+the second edit landed                      ok
+content that was already there survived     ok
+the turn added ONE undo entry, not one per edit  ok   (depth 1 -> 2, "Cowork: edit")
+both agent edits are gone after one undo    ok
+the document matches what it was before     ok
+the pre-existing content is intact          ok
+Live editing works, and a turn is one undo step.
+```
+
+That is the product: an agent edited the document on screen, and a single undo
+reversed the entire turn without disturbing anything that was already there.
+
+## F52 — WARNING: with two offices running, the agent can edit the wrong one
+
+Writing that test found a genuine safety problem, not a test artefact.
+
+The document tools choose their office like this:
+
+```python
+if os.environ.get("COWORK_ACCEPT"):   use that
+else:                                 the default per-user pipe
+```
+
+The pipe is **per user, not per office**. With two LibreOffices running — the
+user's on `:0` and a sandbox on `:99` — an unset `COWORK_ACCEPT` attaches to
+whichever answers first. During this test the agent reported `Untitled 1`, which
+was **the user's own unsaved document**, while the panel and the bridge were both
+looking at `freshdoc.txt` in the sandbox.
+
+Nothing was harmed here because the agent happened to make no edits. It could as
+easily have rewritten a document somebody was working on.
+
+Two changes:
+
+1. **`cowork-runtime.sh` now records the target in its log and passes
+   `COWORK_ACCEPT` through explicitly**, with a comment explaining the failure.
+   Silence about which office is being edited is the dangerous part.
+2. The test sets `COWORK_ACCEPT` explicitly, which is what made it pass.
+
+**For anyone running more than one office: set `COWORK_ACCEPT`.** The normal
+single-office case is unaffected — the pipe is correct there, and is local-only by
+construction.
+
+A stronger guard belongs in the product and is not built yet: the panel knows which
+document it is showing, so the tool layer could refuse to act when the office it
+attached to is not the one the panel belongs to. That is worth doing before this is
+used in earnest.

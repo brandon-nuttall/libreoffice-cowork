@@ -19,7 +19,16 @@
 # Environment:
 #   COWORK_PORT      endpoint port (default 8765)
 #   COWORK_DSH_BIN   path to dsh/lib/bin.js if it is not on PATH
+#   COWORK_ACCEPT    which LibreOffice to target, e.g.
+#                    "socket,host=127.0.0.1,port=2098" or "pipe,name=lo-cowork-me".
+#                    Inherited by the document tools. Leave unset for the normal
+#                    case: the office the user is actually running.
 #   DSH_HOME         harness home (default ~/.dsh)
+#
+# WARNING, learned the hard way: with two offices running and COWORK_ACCEPT unset,
+# the document tools fall back to the default pipe and attach to WHICHEVER office
+# answers it first — which, during testing, was the user's own session rather than
+# the sandbox. Set COWORK_ACCEPT whenever more than one office is up.
 
 set -uo pipefail
 
@@ -124,11 +133,19 @@ if [ -p "$FIFO" ]; then
   echo "$HOLDER" > "$FIFO_DIR/holder.pid"
 fi
 
+# COWORK_ACCEPT is exported explicitly so the document tools cannot silently fall
+# back to the default pipe — see the warning above.
+if [ -n "${COWORK_ACCEPT:-}" ]; then
+  log "document target: $COWORK_ACCEPT"
+else
+  log "document target: default pipe (no COWORK_ACCEPT set)"
+fi
+
 if command -v setsid >/dev/null 2>&1; then
-  DSH_HOME="$DSH_HOME_DIR" COWORK_PORT="$PORT" \
+  DSH_HOME="$DSH_HOME_DIR" COWORK_PORT="$PORT" COWORK_ACCEPT="${COWORK_ACCEPT:-}" \
     setsid node "$BIN" --profile "$PROFILE" < "$FIFO" >> "$LOG" 2>&1 &
 else
-  DSH_HOME="$DSH_HOME_DIR" COWORK_PORT="$PORT" \
+  DSH_HOME="$DSH_HOME_DIR" COWORK_PORT="$PORT" COWORK_ACCEPT="${COWORK_ACCEPT:-}" \
     nohup node "$BIN" --profile "$PROFILE" < "$FIFO" >> "$LOG" 2>&1 &
 fi
 
