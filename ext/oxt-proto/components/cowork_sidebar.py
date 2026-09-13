@@ -41,7 +41,7 @@ import uno
 import unohelper
 
 from com.sun.star.awt import (XActionListener, XCallback, XKeyListener,
-                              XWindowListener, XTextListener)
+                              XAdjustmentListener, XWindowListener, XTextListener)
 from com.sun.star.awt.Key import RETURN as KEY_RETURN
 from com.sun.star.awt.KeyModifier import SHIFT as MOD_SHIFT
 from com.sun.star.awt.PosSize import POSSIZE
@@ -51,6 +51,14 @@ from com.sun.star.ui.UIElementType import TOOLPANEL
 
 # The client is plain Python with no UNO dependency, so the streaming path can
 # be tested against a live service without a GUI.
+try:
+    import cowork_markdown as markdown
+except ImportError:  # the extension dir is not always on sys.path
+    import os as _os
+    import sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    import cowork_markdown as markdown
+
 try:
     from cowork_client import AgentClient, AgentUnavailable
 except ImportError:  # the extension dir is not always on sys.path
@@ -73,6 +81,23 @@ _MARGIN = 6
 _GAP = 4
 _COMPOSER_HEIGHT = 46
 _STATUS_HEIGHT = 18
+# One rendered line, and the width of one character, in the container's units.
+#
+# These are 1/100 mm, and getting them wrong is invisible in code and obvious on
+# screen: an earlier pair (62 and 60) meant a 10-point line was given 0.62 mm of
+# height — text drawn on top of itself — and a 200-unit column allowed three
+# characters, so the conversation rendered as scattered glyph fragments. Both
+# numbers here are millimetres x 100 for 10-point text: a line needs roughly
+# 3.5 mm plus leading, and a monospace advance is roughly 2.1 mm.
+_ROW_HEIGHT = 340
+_CHAR_WIDTH = 212
+# Real family names, taken from `fc-match` rather than from habit. The obvious
+# guesses ("Liberation Sans" / "Liberation Mono") are only aliases on this
+# platform; fc-match reports Noto Sans and DejaVu Sans Mono as what actually
+# resolves, and a family the toolkit cannot find renders as scattered glyph
+# fragments rather than falling back gracefully.
+_MONO_FONT = "DejaVu Sans Mono"
+_SANS_FONT = "Noto Sans"
 # Show the elapsed clock only after this long, matching the DSH progress chrome:
 # a count-up on a two-second call is noise, on a thirty-second one it is the
 # difference between "working" and "hung".
@@ -301,6 +326,31 @@ class _MainThreadPump(unohelper.Base, XCallback):
         element._pump_once()
 
 
+class _ScrollListener(unohelper.Base, XAdjustmentListener):
+    """Re-lays-out the transcript when the scrollbar moves.
+
+    The interface is `XAdjustmentListener`, not `XScrollListener` — the latter
+    does not exist, and importing it makes the extension fail to load entirely
+    with "No module named 'com'".
+    """
+
+    def __init__(self, element):
+        self.element = element
+
+    def adjusted(self, event):
+        element = self.element
+        if element is None:
+            return
+        try:
+            element._scroll_offset = int(event.Value)
+            element._render()
+        except Exception:
+            _log(traceback.format_exc())
+
+    def disposing(self, _event):
+        self.element = None
+
+
 class _ComposerKeys(unohelper.Base, XKeyListener):
     """Shift+Enter sends; Enter inserts a newline.
 
@@ -456,15 +506,34 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         # The conversation occupies the top and absorbs all spare height. No
         # caption above it: LibreOffice already names the deck, and a second
         # title would waste the most valuable strip of the panel.
-        self._control(container, "txtTranscript", "UnoControlEdit",
-                      "UnoControlEditModel",
-                      MultiLine=True,
-                      ReadOnly=True,          # a transcript, not an input field
-                      VScroll=True,
-                      AutoVScroll=True,
-                      Border=True,            # marks the region as the thread
-                      HideInactiveSelection=False,
-                      Tabstop=True)
+        # The conversation is a stack of small styled labels inside a scrolling
+        # container, not one edit control. A single control cannot render
+        # markdown: its font properties apply to the whole control, and there is
+        # no rich-text control available (UnoControlRichText returns None from
+        # this context, like com.sun.star.awt.Timer). Per-control formatting is
+        # what the toolkit does support, so each block becomes its own label.
+        # UnoControlContainer has no scroll properties at all — its model carries
+        # only Border, BackgroundColor, Text and friends — so scrolling is a real
+        # scrollbar beside it plus an offset applied to the labels. That is how
+        # this toolkit does it; there is no scrolling container to lean on.
+        self._control(container, "pnlTranscript", "UnoControlContainer",
+                      "UnoControlContainerModel", Border=True)
+        bar = self._control(container, "scrTranscript", "UnoControlScrollBar",
+                            "UnoControlScrollBarModel",
+                            Orientation=1, ScrollValue=0, ScrollValueMin=0,
+                            ScrollValueMax=100, VisibleSize=100, LineIncrement=1,
+                            BlockIncrement=10)
+        if bar is not None:
+            scroll_listener = _ScrollListener(self)
+            try:
+                bar.addScrollListener(scroll_listener)
+                self._listeners.append(scroll_listener)
+            except Exception:
+                _log("could not attach the scroll listener:\n%s" % traceback.format_exc())
+        self._transcript_rows = []
+        self._scroll_offset = 0
+        self._transcript_height = 0
+        self._transcript_width = 0
 
         # MultiLine + no horizontal scroll: a single-line field scrolls the text
         # sideways as you type, so anything longer than the box width is
@@ -595,7 +664,12 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             transcript_y = _MARGIN
             transcript_h = max(status_y - _GAP - transcript_y, 60)
 
-            self._place("txtTranscript", _MARGIN, transcript_y, inner, transcript_h)
+            bar_w = 14
+            self._transcript_width = max(inner - bar_w - _GAP, 40)
+            self._place("pnlTranscript", _MARGIN, transcript_y,
+                        self._transcript_width, transcript_h)
+            self._place("scrTranscript", _MARGIN + inner - bar_w, transcript_y,
+                        bar_w, transcript_h)
             self._place("lblStatus", _MARGIN, status_y, inner, _STATUS_HEIGHT)
             self._place("txtComposer", _MARGIN, composer_y, inner, _COMPOSER_HEIGHT)
             half = max((inner - _GAP) // 2, 30)
@@ -605,6 +679,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             _log("%slayout: parent=%dx%d container=%dx%d inner=%d transcript_h=%d"
                  % ("re" if resized else "", psize.Width, psize.Height,
                     width, height, inner, transcript_h))
+            self._render()
         except Exception:
             _log(traceback.format_exc())
 
@@ -650,39 +725,175 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             _doc_key(self.frame),
             [{"kind": "cowork", "text": _greeting(self.frame)}])
 
+    # -- rendering the conversation ------------------------------------ //
+
+    # Block styling. Font heights are in points; the container works in the
+    # window's units (1/100 mm), so heights are converted.
+    _STYLE = {
+        markdown.SPEAKER:   {"weight": 150.0, "size": 9,  "mono": False, "indent": 0},
+        markdown.HEADING:   {"weight": 150.0, "size": 11, "mono": False, "indent": 0},
+        markdown.PARAGRAPH: {"weight": 100.0, "size": 10, "mono": False, "indent": 0},
+        markdown.BULLET:    {"weight": 100.0, "size": 10, "mono": False, "indent": 12},
+        markdown.CODE:      {"weight": 100.0, "size": 9,  "mono": True,  "indent": 12},
+        markdown.RULE:      {"weight": 100.0, "size": 8,  "mono": False, "indent": 0},
+    }
+
     def _render(self):
-        """Redraw the conversation, scrolled to the newest message."""
-        control = self._control_by_name("txtTranscript")
-        if control is None:
+        """Draw the conversation as a stack of styled labels.
+
+        Heights are computed rather than measured: the toolkit offers no way to
+        ask a label for the height its text needs (`XLayoutConstrains` is not
+        available on this control), so the text is hard-wrapped to a character
+        grid using a monospace font and the height derived from the line count.
+        Deterministic, at the cost of the wrapping being slightly conservative.
+        """
+        container = self._control_by_name("pnlTranscript")
+        if container is None:
             return
-        chunks = []
-        for entry in self._entries():
-            kind, text = entry["kind"], entry["text"]
-            if kind == "you":
-                chunks.append("You:\n%s" % text)
-            elif kind == "cowork":
-                chunks.append("Cowork:\n%s" % text)
-            elif kind == "status":
-                # Labelled like a turn so it does not read as stray text, but
-                # marked as provisional.
-                chunks.append("Cowork: %s" % text)
-            else:
-                chunks.append(text)
-        body = "\n\n".join(chunks)
-        try:
-            control.setText(body)
-            # Scroll to the newest message by placing a ZERO-WIDTH cursor at the
-            # end: `Selection(n, n)` is a caret, `Selection(0, n)` is "select
-            # everything" and paints the entire conversation in the selection
-            # colour. The transcript was permanently highlighted because of that
-            # one wrong first argument.
+        blocks = markdown.layout(self._entries())
+
+        # Wrap against the width the panel was LAID OUT at. Asking the container
+        # is unreliable: it is created while the sidebar is still 0x0, so the
+        # reported width can be a stale default and the text then wraps to a
+        # width nobody will ever see.
+        width = self._transcript_width or container.getPosSize().Width or _FALLBACK_WIDTH
+        inner = max(width - 2 * _MARGIN, 60)
+        columns = max(int(inner / _CHAR_WIDTH), 16)
+
+        rendered = []
+        for block in blocks:
+            style = self._STYLE.get(block["kind"], self._STYLE[markdown.PARAGRAPH])
+            text = block["text"]
+            if block["kind"] == markdown.RULE:
+                text = "─" * min(columns, 40)
+            lines = self._wrap(text, columns - (2 if style["indent"] else 0))
+            rendered.append((block, style, lines))
+
+        # Reuse the labels we already have; only add the ones we need.
+        needed = sum(len(lines) for _b, _s, lines in rendered)
+        while len(self._transcript_rows) < needed:
+            row = self._new("UnoControlFixedText")
+            model = self._new("UnoControlFixedTextModel")
+            model.MultiLine = False        # one line per label keeps height exact
+            model.Align = 0
+            model.Label = ""
+            row.setModel(model)
             try:
-                control.setSelection(
-                    uno.createUnoStruct("com.sun.star.awt.Selection", len(body), len(body)))
+                container.addControl("row%d" % len(self._transcript_rows), row)
+            except Exception:
+                _log(traceback.format_exc())
+            self._transcript_rows.append(row)
+
+        # Total height first, so the scrollbar range can be set before drawing.
+        total = _MARGIN
+        previous = None
+        for block, _style, lines in rendered:
+            total += markdown.gap_before(block, previous) + len(lines) * _ROW_HEIGHT
+            previous = block
+        total += _MARGIN
+        self._transcript_height = total
+
+        view = container.getPosSize().Height or 200
+        self._set_scroll_range(total, view)
+        offset = 0 if os.environ.get("COWORK_SCROLL_TOP") else self._scroll_offset
+
+        y = _MARGIN - offset
+        index = 0
+        previous = None
+        for block, style, lines in rendered:
+            y += markdown.gap_before(block, previous)
+            for line in lines:
+                if index >= len(self._transcript_rows):
+                    break
+                row = self._transcript_rows[index]
+                model = row.getModel()
+                try:
+                    model.Label = line
+                    model.FontWeight = style["weight"]
+                    # FontHeight is in POINTS, not twips. Multiplying by ten
+                    # (a habit from twip-based APIs) made every label twenty
+                    # times too large, which is how a transcript came out as two
+                    # enormous letters.
+                    model.FontHeight = style["size"]
+                    # Explicit family names. An empty FontName does not mean
+                    # "default": it breaks font resolution and the label renders
+                    # as scattered glyph fragments — visible in a capture, and
+                    # not something a test would have caught.
+                    model.FontName = _MONO_FONT if style["mono"] else _SANS_FONT
+                    model.TextColor = 0x888888 if block["kind"] == markdown.SPEAKER else -1
+                except Exception:
+                    _log(traceback.format_exc())
+                indent = _MARGIN + style["indent"]
+                # A row scrolled out of view is hidden rather than drawn at a
+                # negative offset, which would paint over the controls above.
+                if y + _ROW_HEIGHT < 0 or y > view:
+                    row.setVisible(False)
+                else:
+                    row.setPosSize(indent, y, max(inner - style["indent"] - 20, 40),
+                                   _ROW_HEIGHT, POSSIZE)
+                    row.setVisible(True)
+                y += _ROW_HEIGHT
+                index += 1
+            previous = block
+
+        for row in self._transcript_rows[index:]:
+            try:
+                row.setVisible(False)
             except Exception:
                 pass
+
+    def _set_scroll_range(self, total, view):
+        bar = self._control_by_name("scrTranscript")
+        if bar is None:
+            return
+        try:
+            model = bar.getModel()
+            maximum = max(total - view, 0)
+            model.ScrollValueMax = max(maximum, 1)
+            model.VisibleSize = min(view, max(total, 1))
+            if self._scroll_offset > maximum:
+                self._scroll_offset = maximum
+            model.ScrollValue = self._scroll_offset
         except Exception:
-            _log("setText failed:\n%s" % traceback.format_exc())
+            _log(traceback.format_exc())
+
+    def _scroll_to_newest(self):
+        """Keep the newest message in view when the conversation grows."""
+        view = 0
+        container = self._control_by_name("pnlTranscript")
+        if container is not None:
+            view = container.getPosSize().Height or 0
+        self._scroll_offset = max(self._transcript_height - view, 0)
+        self._render()
+
+    @staticmethod
+    def _wrap(text, columns):
+        """Hard-wrap to a character grid, preserving explicit newlines."""
+        columns = max(columns, 8)
+        out = []
+        for paragraph in text.split("\n"):
+            if not paragraph:
+                out.append("")
+                continue
+            line = ""
+            for word in paragraph.split(" "):
+                if not line:
+                    candidate = word
+                else:
+                    candidate = line + " " + word
+                if len(candidate) <= columns:
+                    line = candidate
+                else:
+                    if line:
+                        out.append(line)
+                    # A single word longer than the width is broken, not clipped.
+                    while len(word) > columns:
+                        out.append(word[:columns])
+                        word = word[columns:]
+                    line = word
+            if line:
+                out.append(line)
+        return out or [""]
 
     def _append(self, speaker, message):
         kind = {"You": "you", "Cowork": "cowork"}.get(speaker, "cowork")
@@ -799,6 +1010,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             _log(traceback.format_exc())
 
         self._append("You", text)
+        self._scroll_to_newest()
         self._set_busy(True)
         try:
             worker = threading.Thread(target=_turn_worker, args=(self, text),

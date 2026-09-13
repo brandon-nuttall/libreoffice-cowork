@@ -62,7 +62,8 @@ def install_uno_stubs():
            XWindowListener=type("XWindowListener", (), {}),
            XTextListener=type("XTextListener", (), {}),
            XCallback=type("XCallback", (), {}),
-           XKeyListener=type("XKeyListener", (), {}))
+           XKeyListener=type("XKeyListener", (), {}),
+           XAdjustmentListener=type("XAdjustmentListener", (), {}))
     module("com.sun.star.awt.Key", RETURN=1280)
     module("com.sun.star.awt.KeyModifier", SHIFT=1, MOD1=2)
     module("com.sun.star.awt.PosSize", POSSIZE=12)

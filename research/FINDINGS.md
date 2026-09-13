@@ -1377,3 +1377,71 @@ It is now a single status line naming the current step, with an elapsed count
 after 15 seconds — the same shape the harness's own chrome uses, and the honest
 one: "Checking the layout… 24s" says *this is still happening*, which is all the
 panel actually knows.
+
+---
+
+# MARKDOWN IN THE SIDEBAR
+
+Asked after seeing the first working conversation: *"i think we need to be able to
+render markdown in the sidebar, so maybe a giant text box isn't what we want to
+do"*. The panel was showing `**bold**`, `-` bullets and `--` literally.
+
+## F37 — There is no rich-text control, so formatting comes from control properties
+
+Checked, in this order:
+
+* `UnoControlRichTextControl` / `UnoControlRichText` — **not creatable** from the
+  panel's context; the model comes back `None`, the same trap as
+  `com.sun.star.awt.Timer`.
+* A single `UnoControlEdit` — holds plain text, and its font properties apply to
+  the whole control, so one word cannot be bold.
+* `UnoControlFixedTextModel` — accepts **FontWeight, FontHeight, FontName,
+  FontSlant, TextColor**, and `FontWeight.BOLD` is a real constant (150.0).
+
+So the conversation is now a **vertical stack of small styled labels** inside a
+plain container: a heading is a bold larger label, a code line is monospace, a
+bullet is indented, a speaker name is grey. Which is what a chat view is anyway.
+
+There is no scrolling container (`UnoControlContainerModel` carries only Border,
+BackgroundColor and Text), so scrolling is a real `UnoControlScrollBar` beside it
+plus an offset applied to the rows, with off-view rows hidden rather than drawn at
+a negative offset.
+
+## F38 — Markdown is parsed in a UNO-free module, and tested without a GUI
+
+`cowork_markdown.py` turns messages into typed blocks — heading, paragraph,
+bullet, code, rule, speaker — and strips inline emphasis. It imports no UNO, so
+`tests/test-markdown.py` exercises it directly: 34 checks covering the shapes an
+agent actually replies with, unterminated fences, ordered lists, links, and
+hostile input (unbalanced markers, 500-word lines, empty strings).
+
+Putting the format layer behind a testable seam mattered here: "a bullet still
+says `-`" and "a heading still has its hashes" are exactly the defects a screenshot
+would only catch by luck.
+
+## F39 — Four geometry mistakes, all invisible in code and obvious on screen
+
+1. **`FontName = ""` is not "use the default."** It breaks font resolution and the
+   label renders as scattered glyph fragments.
+2. **The obvious family names are wrong.** `fc-match` reports **Noto Sans** and
+   **DejaVu Sans Mono** on this platform; "Liberation Sans"/"Liberation Mono" are
+   only aliases, and a family the toolkit cannot resolve renders as fragments
+   rather than falling back.
+3. **`FontHeight` is in points, not twips.** Multiplying by ten — a habit from
+   twip-based APIs — made every label twenty times too large; the transcript came
+   out as two enormous letters.
+4. **The container's units are 1/100 mm.** An early `_ROW_HEIGHT = 62` gave a
+   10-point line 0.62 mm of height, so text drew on top of itself, and
+   `_CHAR_WIDTH = 60` allowed three characters per line, so the wrapping shredded
+   every sentence.
+
+`XScrollListener` also does not exist — the interface is **`XAdjustmentListener`**
+— and importing it makes the extension fail to load entirely with
+`No module named 'com'`.
+
+## Status
+
+Verified by capture: speaker labels render grey and bold, paragraphs wrap, the
+font size is right, and no `**` or `-` markers reach the screen. Row spacing is
+still loose — the gap between a speaker label and its first line is visibly larger
+than intended — so that is the next thing to tighten.
