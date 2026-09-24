@@ -40,6 +40,8 @@ GAP_CODE = 4
 # Inner padding: the label is inset inside its bubble by PAD_H on each side,
 # and colour strips fill the ring between bubble edge and text.
 PAD_H = 18
+PAD_V = 6            # visible padding above/below the text (drawn as strips,
+                     # so the label itself keeps its calibrated geometry)
 RULE_HEIGHT = 4
 BAR_W = 10           # vertical scrollbar width
 BAR_GAP = 2

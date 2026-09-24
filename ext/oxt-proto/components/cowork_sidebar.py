@@ -1360,14 +1360,31 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                         if seam > 2:
                             fill = self._filler(filler_index)
                             fill.getModel().BackgroundColor = bubble_colour
-                            fill.setPosSize(px, gap_top + 1, full_w, seam - 2,
-                                            POSSIZE)
+                            # THE SEAM LIVES ON THE SCROLLED AXIS. Pre-fix this
+                            # strip was positioned without "- used", so every
+                            # seam filler painted off-viewport and the internal
+                            # gaps of a turn stayed visible.
+                            fill.setPosSize(px, gap_top - used + 1, full_w,
+                                            seam - 2, POSSIZE)
                             fill.setVisible(True)
                             filler_index += 1
-                    # Inner padding: strips of the bubble colour on both sides
-                    # of the text, so the words stop touching the edge. (The
-                    # toolkit has no transparent label, so the bubble is drawn
-                    # as disjoint same-colour rectangles.)
+                    # Inner padding, top and bottom too: strips above and
+                    # below the label extend the bubble by PAD_V on each end.
+                    # (The toolkit has no transparent label, so the bubble is
+                    # drawn as disjoint same-colour rectangles.)
+                    top = self._filler(filler_index)
+                    top.getModel().BackgroundColor = bubble_colour
+                    top.setPosSize(px, row["y"] - used - chat.PAD_V, full_w,
+                                   chat.PAD_V, POSSIZE)
+                    top.setVisible(True)
+                    filler_index += 1
+                    bottom = self._filler(filler_index)
+                    bottom.getModel().BackgroundColor = bubble_colour
+                    bottom.setPosSize(px,
+                                      row["y"] - used + row["h"], full_w,
+                                      chat.PAD_V, POSSIZE)
+                    bottom.setVisible(True)
+                    filler_index += 1
                     left = self._filler(filler_index)
                     left.getModel().BackgroundColor = bubble_colour
                     left.setPosSize(px, row["y"] - used, chat.PAD_H,

@@ -2129,3 +2129,21 @@ Two more points from the user's screenshot:
     Model-internal gaps are now near-solid (para 4, code 4, heading 14/2) --
     the seam filler paints those few units, so the turn reads as one box --
     while the speaker gap (60) stays the visible boundary between sides.
+
+
+---
+
+# F66 -- The axis slip, again, and the top of the box
+
+Two remissions from the user's latest screenshot:
+
+  1. INTERNAL GAPS STILL VISIBLE: the seam filler was positioned WITHOUT the
+     scroll offset ("gap_top + 1" on the absolute axis) while every row was
+     drawn at "y - used". The fillers painted off-viewport -- visible seams in
+     every model turn. This is the same class as F64's dropped "right": the
+     scrolled axis is now subtracted in exactly one place per strip.
+
+  2. TOP PADDING: left/right rings worked; the first line still kissed the top
+     edge. PAD_V strips above and below the label extend the bubble by 6 units
+     on each end (disjoint rectangles again). Top/bottom/left/right rings, all
+     bubble-coloured; the text label sits in the middle of a made box.
