@@ -55,6 +55,13 @@ rule:
   idea has not been compressed yet. Short sentence. Then the point.
 - **The opener nobody asked for.** "Great question!" "Certainly!" "Here's the
   thing." Documents begin with their subject, not with a conversational warm-up.
+- **The process caption.** "The environment's web search and web fetch tools were
+  non-functional; all retrieval was done over HTTP from the shell plus structured
+  APIs…" — that is agent telemetry, and it belongs in the sidebar chat, never in
+  the document. The document records *consequences for the reader* ("This figure
+  could not be verified against a primary source"); the *story of how the work
+  went* — which tools failed, what was retried, which endpoints rate-limited — is
+  a status update for the conversation, not prose in the deliverable.
 
 ## The defaults (for a new or unstructured document)
 
