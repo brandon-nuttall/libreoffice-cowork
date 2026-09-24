@@ -346,7 +346,11 @@ export function apply(ctx, config = {}) {
     description:
       'Append text to the live Writer document. Newlines create real paragraphs. ' +
       'Edits are grouped so the whole turn can be undone with one Ctrl-Z. ' +
-      'Set where="selection" to replace the current selection instead.',
+      'Set where="selection" to replace the current selection. ' +
+      'STRUCTURE YOUR OUTPUT: headings need paragraph_style="Heading 1" (or "Heading 2" ' +
+      'for subsections), body text needs "Text Body", and lists should be introduced ' +
+      'by a heading. A document of all-Standard paragraphs with UPPERCASE pseudo- ' +
+      'headings is wrong — use real styles so the outline and navigation work.',
     parameters: {
       ...targetParams(),
       text: { type: 'string', required: true, description: 'Text to insert.' },

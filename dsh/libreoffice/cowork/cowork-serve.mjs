@@ -119,6 +119,7 @@ export function apply(ctx, config = {}) {
   let current = null   // { sessionId, onEvent, onDone }
 
   ctx.on('session/event', (session, event) => {
+    note(`session/event: session.id=${session?.id?.slice(-8)} type=${event?.type} keys=${Object.keys(event || {}).join(',')}`)
     if (current === null) return
     if (session?.id !== undefined && session.id !== current.sessionId) return
     current.onEvent(event)
@@ -129,6 +130,48 @@ export function apply(ctx, config = {}) {
     const status = typeof payload === 'string' ? payload : payload?.status
     current.onStatus(status)
   })
+
+  // `session/event` is scoped to each session's own context (the type is
+  // `Scoped<Session>`), so a root-level subscription sees nothing — which is
+  // exactly what happened: the runtime's .jsonrpc log had 88,000 chunk events
+  // while the serve log showed zero. The SDK server works because it runs inside
+  // each session's scope. This plugin is a root-level profile row, so it must
+  // subscribe on the session's own context and clean up when the turn ends.
+  function watchSession(record) {
+    const disposers = []
+    const agent = record?.agent
+
+    // Committed events (assistant/message, tool/call, turn/end) arrive on the
+    // SESSION's scope, as `Scoped<Session>` — a root-level subscription to the
+    // same name sees nothing at all.
+    const sessionCtx = agent?.ctx ?? agent?.session?.ctx
+    if (sessionCtx?.on !== undefined) {
+      disposers.push(sessionCtx.on('session/event', (session, event) => {
+        if (current === null) return
+        if (session?.id !== undefined && session.id !== current.sessionId) return
+        current.sessionEvent(event)
+      }))
+    }
+
+    // Streaming TOKENS arrive on the AGENT's scope as `agent/assistant-stream`,
+    // as transient AssistantStreamFrames — they are never committed to the
+    // session log, so session/event cannot carry them. The session only sees
+    // the final assistant/message once the step commits. Without this
+    // subscription, every reply arrived as a single block with no streaming.
+    if (agent?.ctx?.on !== undefined) {
+      disposers.push(agent.ctx.on('agent/assistant-stream', (payload) => {
+        if (current === null) return
+        current.streamFrame(payload?.frame)
+      }))
+    }
+
+    if (disposers.length === 0) note('no session or agent event subscription available')
+    return () => {
+      for (const dispose of disposers) {
+        try { dispose() } catch { /* already disposed */ }
+      }
+    }
+  }
 
   async function ask(req, res) {
     let body = ''
@@ -155,6 +198,9 @@ export function apply(ctx, config = {}) {
       if (finished) return
       finished = true
       active = false
+      if (current?.disposer !== undefined && current.disposer !== null) {
+        try { current.disposer() } catch { /* already disposed */ }
+      }
       current = null
       if (payload) send(payload)
       res.end()
@@ -166,24 +212,25 @@ export function apply(ctx, config = {}) {
 
     try {
       const record = await sessionFor(String(request.doc ?? ''))
+      // `session/event` is scoped to each session's own context — see the
+      // comment at `watchSession` — so the subscription must be attached there,
+      // not at root.
+      const disposer = watchSession(record)
       send({ ok: true, event: 'started' })
       current = {
         sessionId: record.sessionId,
+        disposer,
         onStatus: (status) => {
           if (status === 'running') sawRunning = true
           else if (status === 'idle' && sawRunning) {
             finish({ ok: true, event: 'done', text: final ?? streamed })
           }
         },
-        onEvent: (event) => {
+        // Committed session events: tool calls, the final message, turn
+        // boundaries. No token streaming here — that is streamFrame below.
+        sessionEvent: (event) => {
           const type = event?.type
-          if (type === 'assistant/chunk') {
-            const chunk = event.data?.chunk ?? {}
-            if (chunk.type === 'text-delta' && chunk.text) {
-              streamed += chunk.text
-              send({ ok: true, event: 'chunk', text: chunk.text })
-            }
-          } else if (type === 'tool/call') {
+          if (type === 'tool/call') {
             const name = event.data?.name ?? ''
             send({ ok: true, event: 'tool', name, label: TOOL_LABELS[name] ?? 'Working…' })
           } else if (type === 'assistant/message') {
@@ -197,12 +244,27 @@ export function apply(ctx, config = {}) {
             }
           }
         },
+        // Transagent stream frames: the token-by-token reply as it is
+        // generated. These never reach the session log.
+        // The frame is {type:'chunk', chunk:StreamChunk, ...}; the delta is
+        // inside .chunk, not on the frame itself.
+        streamFrame: (frame) => {
+          if (frame?.type !== 'chunk') return
+          const chunk = frame.chunk ?? {}
+          if (chunk.type === 'text-delta' && chunk.text) {
+            streamed += chunk.text
+            send({ ok: true, event: 'chunk', text: chunk.text })
+          }
+        },
       }
 
       res.on('close', () => {
         if (!finished) {
           finished = true
           active = false
+          if (current?.disposer !== undefined && current.disposer !== null) {
+            try { current.disposer() } catch { /* already disposed */ }
+          }
           current = null
         }
       })

@@ -42,6 +42,7 @@ import unohelper
 
 from com.sun.star.awt import (XActionListener, XCallback, XKeyListener,
                               XAdjustmentListener, XWindowListener, XTextListener)
+from com.sun.star.beans import PropertyAttribute
 from com.sun.star.awt.Key import RETURN as KEY_RETURN
 from com.sun.star.awt.KeyModifier import SHIFT as MOD_SHIFT
 from com.sun.star.awt.PosSize import POSSIZE
@@ -202,10 +203,78 @@ def _doc_key(frame):
         return _DEFAULT_KEY
 
 
+def _doc_properties(frame):
+    """The document's user-defined properties, which persist across save/open.
+
+    LibreOffice stores custom properties in the file itself (the
+    `meta:user-defined` elements in the ODF manifest), so a conversation saved
+    here travels with the document — reopen it anywhere and the history is
+    there. This is where the chat transcript belongs.
+    """
+    try:
+        doc = frame.getController().getModel()
+        return doc.getDocumentProperties().getUserDefinedProperties()
+    except Exception:
+        return None
+
+
+def _load_conversation(frame):
+    """Read the conversation from the document's metadata, if any."""
+    import json as _json
+    props = _doc_properties(frame)
+    if props is None:
+        return None
+    try:
+        stored = props.getPropertyValue("CoworkChat")
+        entries = _json.loads(stored)
+        if isinstance(entries, list):
+            return entries
+    except Exception:
+        pass
+    return None
+
+
+def _save_conversation(frame, entries):
+    """Write the conversation to the document's metadata.
+
+    The document becomes "modified" by this write, so the user will be prompted
+    to save and the history persists with the file. The property is REMOVEABLE
+    so `clear` can drop it entirely.
+    """
+    import json as _json
+    props = _doc_properties(frame)
+    if props is None:
+        return
+    payload = _json.dumps(entries[-200:])          # bounded, matching the in-memory cap
+    try:
+        try:
+            props.setPropertyValue("CoworkChat", payload)
+        except Exception:
+            props.addProperty("CoworkChat", PropertyAttribute.REMOVEABLE, payload)
+    except Exception:
+        _log("could not save the conversation to document metadata:\n%s"
+             % traceback.format_exc())
+
+
+def _clear_saved_conversation(frame):
+    """Remove the stored conversation, when the user starts a new one."""
+    props = _doc_properties(frame)
+    if props is None:
+        return
+    try:
+        props.removeProperty("CoworkChat")
+    except Exception:
+        pass
+
+
 def _doc_name(frame):
     try:
         url = frame.getController().getModel().getURL()
-        return url.rsplit("/", 1)[-1] or "this untitled document"
+        name = url.rsplit("/", 1)[-1] or "this untitled document"
+        # A file URL percent-encodes spaces (%20) and other characters; the
+        # sidebar should show the filename the user sees, not the escaped form.
+        from urllib.parse import unquote
+        return unquote(name)
     except Exception:
         return "this document"
 
@@ -711,11 +780,16 @@ class CoworkUIElement(unohelper.Base, XUIElement):
     def _entries(self):
         """The conversation, as [{kind, text}] — one entry per message.
 
-        Kept structured rather than as flat lines so the renderer can lay out a
-        conversation instead of a wall of text, and so a progress line can be
-        replaced in place rather than appended.
+        Persistent: the conversation is stored in the document's own metadata
+        and reloaded when a document is reopened, so the exchange travels with
+        the file. The in-store cache is only a per-session view.
         """
-        return _TRANSCRIPTS.setdefault(_doc_key(self.frame), [])
+        key = _doc_key(self.frame)
+        if key not in _TRANSCRIPTS:
+            stored = _load_conversation(self.frame)
+            if stored:
+                _TRANSCRIPTS[key] = stored
+        return _TRANSCRIPTS.setdefault(key, [])
 
     # -- rendering the conversation ------------------------------------ //
 
@@ -827,6 +901,9 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             self._set_busy(False)
             self._drop_status()
             entries = self._entries()
+            # Persist to the document's metadata; the user will be prompted
+            # to save, and the conversation then travels with the file.
+            _save_conversation(self.frame, entries)
             # The chunks already filled the last cowork entry. Replace its text
             # with the authoritative final rather than appending a second copy —
             # appending doubled every reply in the transcript.
@@ -868,6 +945,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
 
     def clear(self):
         """Start a fresh conversation for this document."""
+        _clear_saved_conversation(self.frame)
         _TRANSCRIPTS[_doc_key(self.frame)] = []
         self._render()
 
