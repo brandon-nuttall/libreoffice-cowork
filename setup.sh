@@ -471,3 +471,9 @@ say "  That is all: the panel starts the Cowork runtime itself the first time yo
 say "  send a message. There is no service to install and nothing to keep running."
 say ""
 say "${DIM}Uninstall any time with:  setup.sh --uninstall${N}"
+
+# The running LibreOffice imports extension code ONCE, at process start.
+# "✓ registered" means the profile holds the new files -- it does NOT mean the
+# open office is running them. Say it, every time.
+ok "installed. RESTART LIBREOFFICE to load this code -- an already-running"
+ok "   office keeps the modules it imported when it started."

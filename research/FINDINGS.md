@@ -2220,3 +2220,18 @@ before declaring an extension crash, boot twice on a copy of the profile --
 once with `--norestore` and once without -- and compare. Install-verification
 now also greps the DEPLOYED copy (not the source) for feature markers, after a
 stale .oxt masqueraded as a fresh install (F67).
+
+---
+
+# F70 — "The sidebar isn't working" was a stale process, again
+
+The user rebooted LibreOffice at 16:59; the palette install landed at ~17:02.
+The running office had imported its extension code at boot, so it kept
+executing the F67 modules — its own build log (btnClear/btnCopy present, no
+btnCommands) proved which code was live, and the profile grep proved F68 was
+deployed. Both things were true simultaneously.
+
+Recorded as standing policy in setup.sh's final message: an install REQUIRES a
+LibreOffice restart, and "registered" refers to the profile, not the process.
+The sidebar log (~/.cache/cowork-sidebar.log) prints the exact control set on
+every build — reading it settles "which code is running" without guessing.
