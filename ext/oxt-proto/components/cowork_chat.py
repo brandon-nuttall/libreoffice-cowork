@@ -46,9 +46,6 @@ RULE_HEIGHT = 4
 BAR_W = 10           # vertical scrollbar width
 BAR_GAP = 2
 EDGE = 4             # right-side breathing room inside the container
-# Wheel: one notch moves this many calibrated lines. Three feels like a chat
-# client; one feels sticky.
-WHEEL_LINES = 3
 
 # Colors -- one explicit palette, painted by the panel itself.
 # BackgroundColor=-1 ("toolkit default") made contrast a property of whichever
@@ -64,7 +61,7 @@ TEXT = 0xE6E7E9            # assistant body text
 MUTED = 0x909090
 RULE_BG = 0x3A3D44
 COMPOSER_BG = 0x27262B      # the pill the composer sits in (matches MODEL_BG's family)
-PLAIN_BG = MODEL_BG = 0x2B2E34
+PLAIN_BG = MODEL_BG          # kept: older code paths name PLAIN_BG
 TEXT_PLAIN = TEXT
 
 # Dash binding: agents write -- and - separators heavily; LibreOffice breaks
@@ -182,8 +179,3 @@ def plan(rows, view, offset=None):
         y = bottom
     return {"rows": out, "total": total, "used_offset": used,
             "max_offset": max_offset}
-
-
-def copy_text(blocks, to_plain_text):
-    """Clipboard text: delegate to the existing clean-paragraph renderer."""
-    return to_plain_text(blocks, 200)

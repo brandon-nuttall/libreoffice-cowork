@@ -2272,3 +2272,58 @@ GUARDS ADDED so this class is dead:
 
 The deployed artifact itself is now boot-tested before install — the missing
 step that let (1) and (2) ship, twice.
+
+---
+
+# F72 — Full fresh-eyes review of the built & deployed product
+
+Scope: every file, deployed state, and live behaviour. Weakest-model failure
+patterns (last-wins duplicates, cross-module names, marker-grep
+"verification", unverifiable claims) hunted everywhere, not just where they
+bit before.
+
+## Real bugs found and fixed
+
+  1. THE SCROLLBAR — reported twice by the user, misdiagnosed twice. _on_scroll
+     repositioned ONLY the text labels, never the _fillers pool (the entire
+     made bubble surface: rings, seams, corners), AND placed labels at the
+     BUBBLE'S x/width, crushing the padding. A drag moved text over stationary
+     colours and looked dead. With a made-surface design a scroll is
+     necessarily a full repaint; _on_scroll now does exactly that.
+  2. THE + PALETTE never worked: pm.addMenuListener(self) passed the element,
+     which does not DECLARE XMenuListener, so pyuno could not adapt it, the
+     guard swallowed the failure, and _commands was silently None. New
+     _MenuListener(unohelper.Base, XMenuListener) with the method set taken
+     from the live registry's own reflection (itemHighlighted/itemSelected/
+     itemActivated/itemDeactivated — the earlier element-level methods
+     invented menuOpened/menuClosed, which do not exist). Verified in a
+     fresh-office boot: the sidebar's OWN instance builds with zero palette
+     failures in the log.
+  3. DEAD CODE removed: WHEEL_LINES (wheel machinery deleted weeks ago; LO
+     cannot deliver wheel events), copy_text (unused), the dead "Copy" button
+     branch in actionPerformed, the four-copies residue
+     (PLAIN_BG = MODEL_BG double-assignment).
+  4. Wiring stubs extended (XMenuListener) — the import died before any check
+     ran, which is how the wiring "FAIL" appeared; standalone greps had hid it.
+
+## Checked clean
+
+Duplicate definitions: zero across ALL components + uno_bridge. Manifest:
+complete. Persona: rules 1-6 sequential, scratchpad/taste/process rules all
+present. Installer: ends with the restart warning. Conversation and live-edit
+acceptance (turn-taking, streaming, one-step undo) green. Panel boot test
+green against a verified-fresh office with PID + sidebar-log proof.
+cowork_layout.py noted as mostly dead (only to_plain_text is used) — left
+intact deliberately this round: pure, tested, and dead-but-correct beats
+fresh churn; a trim is a future cleanup, not a review fix.
+
+## The review's own incident — recorded because it proves the new guards
+
+Mid-review, a slice-based removal started at the NEW listener's itemSelected
+(which now precedes CoworkUIElement) and deleted half the panel (1760 -> 1248
+lines, class gone). Two guards caught it: the statics unresolved-names check
+flagged the missing CoworkUIElement. The boot test then FALSE-PASSED against
+a stale office on old modules — the exact trap documented in F70, so the
+procedure now mandates: kill by PID, verify the port is clear, verify the
+listener PID is new, and require the sidebar's OWN "controls built" line in
+the panel log before believing any green.

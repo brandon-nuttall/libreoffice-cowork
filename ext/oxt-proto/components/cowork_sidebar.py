@@ -41,7 +41,8 @@ import uno
 import unohelper
 
 from com.sun.star.awt import (XActionListener, XCallback, XKeyListener,
-                              XAdjustmentListener, XWindowListener, XTextListener)
+                              XAdjustmentListener, XWindowListener, XTextListener,
+                              XMenuListener)
 from com.sun.star.beans import PropertyAttribute
 from com.sun.star.datatransfer import XTransferable
 from com.sun.star.awt.Key import RETURN as KEY_RETURN
@@ -356,8 +357,6 @@ class _PanelListener(unohelper.Base, XActionListener, XTextListener):
         # spends no vertical space on utility buttons.
         if label == "＋":
             element._show_commands()
-        elif label == "/copy" or label == "Copy":
-            element._copy_transcript()
         else:
             element.submit()
 
@@ -450,6 +449,46 @@ class _TextTransferable(unohelper.Base, XTransferable):
 
     def isDataFlavorSupported(self, flavor):
         return str(flavor.MimeType).startswith("text/plain")
+
+
+class _MenuListener(unohelper.Base, XMenuListener):
+    """The + palette's dispatch.
+
+    A dedicated class, because pyuno adapts Python objects only when the
+    interface is DECLARED on the class: the first version passed the element
+    -- which inherits neither XMenuListener nor anything close -- so the
+    adaptation failed, the build's guard swallowed it, and the palette
+    silently never worked. Method set verified against the live registry's
+    reflection: itemHighlighted, itemSelected, itemActivated, itemDeactivated.
+    """
+
+    def __init__(self, element):
+        self.element = element
+
+    def itemSelected(self, event):
+        element = self.element
+        if element is None:
+            return
+        try:
+            command = int(event.MenuId)
+        except Exception:
+            return
+        if command == 1:
+            element.clear()           # /new: fresh conversation + metadata
+        elif command == 2:
+            element._copy_transcript()
+
+    def itemHighlighted(self, _event):
+        pass
+
+    def itemActivated(self, _event):
+        pass
+
+    def itemDeactivated(self, _event):
+        pass
+
+    def disposing(self, _event):
+        self.element = None
 
 
 class _ScrollListener(unohelper.Base, XAdjustmentListener):
@@ -908,7 +947,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             raise RuntimeError("PopupMenu service unavailable")
         pm.insertItem(1, "/new\tstart a fresh conversation", 0, 1)
         pm.insertItem(2, "/copy\tcopy this conversation", 0, 2)
-        pm.addMenuListener(self)
+        pm.addMenuListener(_MenuListener(self))
         return pm
 
     def _show_commands(self):
@@ -927,32 +966,6 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             self._commands.execute(btn.getPeer(), rect)
         except Exception:
             _log("command palette failed:\n%s" % traceback.format_exc())
-
-    def itemSelected(self, event):
-        """XMenuListener: /new and /copy dispatch like the old buttons did."""
-        try:
-            command = int(event.MenuId)
-        except Exception:
-            return
-        if command == 1:
-            self.clear()
-        elif command == 2:
-            self._copy_transcript()
-
-    def itemHighlighted(self, _event):
-        pass
-
-    def itemAdded(self, _event):
-        pass
-
-    def itemRemoved(self, _event):
-        pass
-
-    def menuClosed(self, _event):
-        pass
-
-    def menuOpened(self, _event):
-        pass
 
     def _paint_composer_chrome(self, margin_x, y, w, h):
         """The composer pill: ring strips + pane-coloured corner cuts."""
@@ -1615,45 +1628,19 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             _log("render failed:\n%s" % traceback.format_exc())
 
     def _on_scroll(self, value):
-        """Reposition cached rows for a user scroll: arithmetic only.
+        """A drag or scrollbar move: adopt the offset and REPAINT.
 
-        Measured heights are cached in `self._stack`, so a scroll tick costs a
-        plan + a sweep of setPosSize calls, never a re-measure. Dragging also
-        cancels autoscroll: the person is in charge until the next turn starts.
+        The old "arithmetic-only" version repositioned only the text labels
+        while the bubble surfaces (rings, seams, corners -- the _fillers pool)
+        stayed at the last render's positions, and it applied the BUBBLE's x
+        and width to the labels, crushing the padding. With a made-surface
+        design a scroll is necessarily a full repaint; the render honours the
+        manual offset once autoscroll disarms.
         """
         self._autoscroll = False
         self._scroll_offset = value
         self._used_offset = value
-        if not self._stack:
-            self._render()
-            return
-        try:
-            panel = self._pnl.getPosSize()
-            width = panel.Width or self._transcript_width or _FALLBACK_WIDTH
-            view = panel.Height or self._transcript_view or 400
-            refreshed = chat.plan(self._stack, view, value)
-            pool = self._transcript_pool
-            for index, row in enumerate(refreshed["rows"]):
-                if index >= len(pool):
-                    break
-                ctl = pool[index]
-                if row["visible"]:
-                    ctl.setPosSize(row["x"], row["y"] - refreshed["used_offset"],
-                                   max(int(width * (1 - row.get("right", 0)) - row["x"]) - 2, 20),
-                                   row["h"], POSSIZE)
-                    ctl.setVisible(True)
-                else:
-                    ctl.setVisible(False)
-            bar = self._control_by_name("scrTranscript")
-            if bar is not None:
-                try:
-                    bar.setValues(refreshed["used_offset"],
-                                  min(view, refreshed["total"]),
-                                  max(refreshed["total"], 1))
-                except Exception:
-                    pass
-        except Exception:
-            _log("scroll apply failed:\n%s" % traceback.format_exc())
+        self._render()
 
     def _copy_transcript(self):
         """Put the whole conversation on the clipboard as clean text."""
