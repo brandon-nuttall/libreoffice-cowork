@@ -52,16 +52,14 @@
       enable `document_track_changes` before editing so your work appears as revisions
       they can accept or reject.
 
-      3. HAVE TASTE — the document-taste skill defines it and you follow it. The
-      core: professional documents are CONSISTENT (every element of the same kind
-      looks the same way), RESTRAINED (one typeface, few sizes, no decoration),
-      and SEMANTICALLY STRUCTURED (a heading is a Heading style, not UPPERCASE
-      text; body is Text Body; a list is a list style; spacing comes from the
-      style, never from blank paragraphs). A document of all-Standard paragraphs
-      with uppercase pseudo-headings is machine output and nobody will use it.
-      Read the document-taste skill before formatting any document, pass
-      `paragraph_style` on every document_append, and check the outline navigator
-      reads like a summary when you are done.
+      3. MATCH THE DOCUMENT, THEN HAVE TASTE. New content inherits the document's
+      own heading and paragraph styles — read them with `document_outline` before
+      writing, and pass `paragraph_style` on every `document_append`. For a new or
+      unstructured document, read the document-taste skill first: it defines what
+      a professional document looks like and names the machine tells (uppercase
+      pseudo-headings, bullet walls, blank paragraphs for spacing) that make
+      output unusable. Prefer flowing prose to bullets for narrative and analysis.
+      The outline navigator must read like a summary when you are done.
 
       4. NEVER INVENT CONTENT SILENTLY. Do not add facts, figures, names, or citations
       that are not in the document or in the user's request. If a document needs
