@@ -772,7 +772,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         # accent UP-ARROW send on the right (Claude's composition). Clear and
         # Copy became slash commands -- utility buttons spent a permanent row
         # on three characters of typing.
-        for name, label, colour in (("btnCommands", "\uff0b", None),
+        for name, label, colour in (("btnCommands", "+", None),
                                     ("btnSend", "\u2191", _COLOR_ACCENT)):
             button = self._control(container, name, "UnoControlButton",
                                    "UnoControlButtonModel",
@@ -785,7 +785,9 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                         model.BackgroundColor = colour
                         model.TextColor = 0xFFFFFF
                     else:
+                        # the + blends into the pill but must READ: light glyph
                         model.BackgroundColor = chat.COMPOSER_BG
+                        model.TextColor = 0xD8D8D8
                 except Exception:
                     _log("button paint failed:\n%s" % traceback.format_exc())
         self._listeners.append(listener)
@@ -877,8 +879,11 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             inner = max(width - 2 * _MARGIN, _MIN_INNER_WIDTH)
 
             # Bottom stack is fixed; the conversation takes everything left.
-            buttons_y = height - _MARGIN - _BUTTON_HEIGHT
-            composer_y = buttons_y - _GAP - _COMPOSER_HEIGHT
+            # The pill holds the input row on top and a command row below it
+            # (Claude's composer); no separate button band outside the pill.
+            cmd_row_h = 26
+            composer_y = height - _MARGIN - cmd_row_h - 2 - _COMPOSER_HEIGHT
+            cmd_y = composer_y + _COMPOSER_HEIGHT + 2
             status_y = composer_y - _GAP - _STATUS_HEIGHT
             transcript_y = _MARGIN
             transcript_h = max(status_y - _GAP - transcript_y, 60)
@@ -891,17 +896,16 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             self._place("scrTranscript", _MARGIN + inner_w + chat.BAR_GAP,
                         transcript_y, chat.BAR_W, transcript_h)
             self._place("lblStatus", _MARGIN, status_y, inner, _STATUS_HEIGHT)
-            send_w = 44
-            self._place("btnSend", _MARGIN + inner - send_w - 4,
-                        composer_y + 4, send_w, _COMPOSER_HEIGHT - 8)
-            self._place("txtComposer", _MARGIN, composer_y,
-                        inner - send_w - 10, _COMPOSER_HEIGHT)
-            half = max((inner - _GAP) // 2, 24)
-            self._place("btnClear", _MARGIN, buttons_y, half, _BUTTON_HEIGHT)
-            self._place("btnCopy", _MARGIN + half + _GAP, buttons_y,
-                        inner - half - _GAP, _BUTTON_HEIGHT)
-            self._paint_composer_chrome(margin_x=_MARGIN, y=composer_y,
-                                        w=inner, h=_COMPOSER_HEIGHT)
+            # input row on top; command row below, inside the same pill
+            self._place("txtComposer", _MARGIN, composer_y, inner,
+                        _COMPOSER_HEIGHT)
+            self._place("btnCommands", _MARGIN + 6, cmd_y + 2, 34,
+                        cmd_row_h - 4)
+            self._place("btnSend", _MARGIN + inner - 40, cmd_y + 2, 34,
+                        cmd_row_h - 4)
+            self._paint_composer_chrome(
+                margin_x=_MARGIN, y=composer_y, w=inner,
+                h=_COMPOSER_HEIGHT + 2 + cmd_row_h)
             self._relayout_transcript()
             _log("%slayout: parent=%dx%d container=%dx%d inner=%d transcript_h=%d"
                  % ("re" if resized else "", psize.Width, psize.Height,
@@ -1197,7 +1201,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         _TRANSCRIPTS[_doc_key(self.frame)] = []
         self._render()
 
-    def _set_busy(self, busy, label="Send"):
+    def _set_busy(self, busy, label="\u2191"):
         """Reflect that a turn is running, and run the elapsed clock.
 
         The toolkit has no spinner, so the Send button is the indicator: a slow
@@ -1531,10 +1535,14 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                     ctl.setVisible(True)
 
                     if previous is not None and previous.get("who") == who:
+                        # Fill the WHOLE same-speaker gap. The old formula
+                        # subtracted PAD_V and fired only when seam > 2, which
+                        # with GAP_BLOCK=4 gave seam=-4 -- never -- so every
+                        # block got its own box and a turn read as a stack.
                         gap_top = previous["y"] + previous["h"] - used
-                        seam = (y - chat.PAD_V) - gap_top
-                        if seam > 2:
-                            self._rect(fi, px, gap_top + 1, full_w, seam - 2,
+                        seam_h = y - gap_top
+                        if seam_h > 0:
+                            self._rect(fi, px, gap_top, full_w, seam_h,
                                        bubble_colour)
                             fi += 1
 
