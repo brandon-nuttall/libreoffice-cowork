@@ -578,6 +578,8 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         self._transcript_view = 0
         self._transcript_pool = []
         self._fillers = []
+        self._chrome_fillers = []
+        self._chrome_fillers = []
         self._line_pitch = 0.0
         self._line_top = 0.0
         self._autoscroll = True
@@ -659,14 +661,15 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         # compensates for.
         self._control(container, "pnlTranscript", "UnoControlContainer",
                       "UnoControlContainerModel")
-        # The chat paints its own surface so bubble/pane contrast is ours to
-        # set, not the theme's.
+        # The whole panel is one canvas in OUR palette (contrast owned, not the
+        # theme's): pane, chrome and composer all paint their own colour.
         try:
+            container.getModel().BackgroundColor = chat.PANEL_BG
             self._control_by_name("pnlTranscript").getModel().BackgroundColor = (
                 chat.PANEL_BG)
+            self._pnl_parent = container
         except Exception:
-            _log("painting the transcript surface failed:\n%s"
-                 % traceback.format_exc())
+            _log("painting the canvas failed:\n%s" % traceback.format_exc())
 
 
         self._control(container, "scrTranscript", "UnoControlScrollBar",
@@ -694,14 +697,17 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                       "UnoControlFixedTextModel",
                       Label="", MultiLine=False, Align=0)
 
+        # The composer is a flat field ON the canvas (Claude-style pill), not a
+        # bordered box floating outside it.
         self._control(container, "txtComposer", "UnoControlEdit",
                       "UnoControlEditModel",
                       MultiLine=True,
-                      Border=True,
+                      Border=False,
                       VScroll=True,
                       AutoVScroll=True,
                       HScroll=False,
-                      AutoHScroll=False)
+                      AutoHScroll=False,
+                      BackgroundColor=chat.COMPOSER_BG)
 
         composer = self._controls.get("txtComposer")
         if composer is not None:
@@ -822,13 +828,17 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             self._place("scrTranscript", _MARGIN + inner_w + chat.BAR_GAP,
                         transcript_y, chat.BAR_W, transcript_h)
             self._place("lblStatus", _MARGIN, status_y, inner, _STATUS_HEIGHT)
-            self._place("txtComposer", _MARGIN, composer_y, inner, _COMPOSER_HEIGHT)
-            third = max((inner - 2 * _GAP) // 3, 24)
-            self._place("btnSend", _MARGIN, buttons_y, third, _BUTTON_HEIGHT)
-            self._place("btnClear", _MARGIN + third + _GAP, buttons_y,
-                        third, _BUTTON_HEIGHT)
-            self._place("btnCopy", _MARGIN + 2 * (third + _GAP), buttons_y,
-                        inner - 2 * (third + _GAP), _BUTTON_HEIGHT)
+            send_w = 44
+            self._place("btnSend", _MARGIN + inner - send_w - 4,
+                        composer_y + 4, send_w, _COMPOSER_HEIGHT - 8)
+            self._place("txtComposer", _MARGIN, composer_y,
+                        inner - send_w - 10, _COMPOSER_HEIGHT)
+            half = max((inner - _GAP) // 2, 24)
+            self._place("btnClear", _MARGIN, buttons_y, half, _BUTTON_HEIGHT)
+            self._place("btnCopy", _MARGIN + half + _GAP, buttons_y,
+                        inner - half - _GAP, _BUTTON_HEIGHT)
+            self._paint_composer_chrome(margin_x=_MARGIN, y=composer_y,
+                                        w=inner, h=_COMPOSER_HEIGHT)
             self._relayout_transcript()
             _log("%slayout: parent=%dx%d container=%dx%d inner=%d transcript_h=%d"
                  % ("re" if resized else "", psize.Width, psize.Height,
@@ -865,6 +875,42 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             control.setPosSize(x, y, max(w, 10), max(h, 10), POSSIZE)
         except Exception:
             _log(traceback.format_exc())
+
+    def _paint_composer_chrome(self, margin_x, y, w, h):
+        """The composer pill: ring strips + pane-coloured corner cuts."""
+        if self._pnl_parent is None:
+            return
+        bg = chat.COMPOSER_BG
+        ring = chat.PANEL_BG
+        index = 0
+
+        def rect(x, yy, ww, hh, colour):
+            nonlocal index
+            ctl = self._chrome(index)
+            ctl.getModel().BackgroundColor = colour
+            ctl.setPosSize(x, yy, max(ww, 1), max(hh, 1), POSSIZE)
+            ctl.setVisible(True)
+            index += 1
+
+        rect(margin_x, y, w, 4, bg)
+        rect(margin_x, y + h - 4, w, 4, bg)
+        rect(margin_x, y, 6, h, bg)
+        rect(margin_x + w - 6, y, 6, h, bg)
+        R = 3
+        for cx, cy, dx, dy in ((margin_x, y, 1, 1),
+                               (margin_x + w, y, -1, 1),
+                               (margin_x, y + h, 1, -1),
+                               (margin_x + w, y + h, -1, -1)):
+            x0 = cx if dx > 0 else cx - R
+            y0 = cy if dy > 0 else cy - R
+            rect(x0, y0, R, 1, ring)
+            rect(x0, y0, 1, R, ring)
+        lbl = self._control_by_name("lblStatus")
+        if lbl is not None:
+            try:
+                lbl.getModel().BackgroundColor = chat.PANEL_BG
+            except Exception:
+                pass
 
     # -- conversation rendering ---------------------------------------- //
 
@@ -1166,6 +1212,30 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                                      "italic": False, "mono": False}]})
         return blocks
 
+    # The block pool is repainted every render and stale entries are hidden;
+    # the CHROME pool is painted once per layout (composer pill, its corners)
+    # and never hidden -- two pools so transcript redraws cannot eat chrome.
+    def _chrome(self, index):
+        pool = self._chrome_fillers
+        while len(pool) <= index:
+            ctl = self._new("UnoControlFixedText")
+            model = self._new("UnoControlFixedTextModel")
+            model.Label = ""
+            ctl.setModel(model)
+            try:
+                self._pnl_parent.addControl("chrome%d" % len(pool), ctl)
+            except Exception:
+                _log("chrome addControl failed:\n%s" % traceback.format_exc())
+            pool.append(ctl)
+        return pool[index]
+
+    def _rect(self, index, x, y, w, h, colour):
+        """Paint one colour rectangle from the block pool."""
+        ctl = self._filler(index)
+        ctl.getModel().BackgroundColor = colour
+        ctl.setPosSize(x, y, max(w, 1), max(h, 1), POSSIZE)
+        ctl.setVisible(True)
+
     def _filler(self, index):
         """Seam strips between same-speaker blocks (colour-matched)."""
         pool = self._fillers
@@ -1338,78 +1408,102 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             self._stack = plan_rows
             used = self._plan["used_offset"]
             self._used_offset = used
-            filler_index = 0
+            fi = 0                      # block-filler cursor for this pass
             previous = None
+            R = 3                       # rounded-corner cut, in units
+            OUTER = chat.PANEL_BG
             for index, row in enumerate(self._plan["rows"]):
                 ctl = rendered[index]
                 if index >= len(rendered):
                     break
                 if row["visible"]:
                     who = row.get("who")
+                    if previous is None or previous.get("who") != who:
+                        run_top = row["y"] - used - chat.PAD_V
+                    y = row["y"] - used
                     bubble_colour = (chat.USER_BG if who == "you"
                                      else chat.MODEL_BG)
                     px = row["x"]
                     full_w = int(width * (1 - row.get("right", 0)) - row["x"]) - 2
+                    bx_right = px + full_w
                     text_w = max(full_w - 2 * chat.PAD_H, 20)
-                    ctl.setPosSize(px + chat.PAD_H, row["y"] - used, text_w,
-                                   row["h"], POSSIZE)
+
+                    ctl.setPosSize(px + chat.PAD_H, y, text_w, row["h"], POSSIZE)
                     ctl.setVisible(True)
+
                     if previous is not None and previous.get("who") == who:
-                        gap_top = previous["y"] + previous["h"]
-                        seam = row["y"] - gap_top
+                        gap_top = previous["y"] + previous["h"] - used
+                        seam = (y - chat.PAD_V) - gap_top
                         if seam > 2:
-                            fill = self._filler(filler_index)
-                            fill.getModel().BackgroundColor = bubble_colour
-                            # THE SEAM LIVES ON THE SCROLLED AXIS. Pre-fix this
-                            # strip was positioned without "- used", so every
-                            # seam filler painted off-viewport and the internal
-                            # gaps of a turn stayed visible.
-                            fill.setPosSize(px, gap_top - used + 1, full_w,
-                                            seam - 2, POSSIZE)
-                            fill.setVisible(True)
-                            filler_index += 1
-                    # Inner padding, top and bottom too: strips above and
-                    # below the label extend the bubble by PAD_V on each end.
-                    # (The toolkit has no transparent label, so the bubble is
-                    # drawn as disjoint same-colour rectangles.)
-                    top = self._filler(filler_index)
-                    top.getModel().BackgroundColor = bubble_colour
-                    top.setPosSize(px, row["y"] - used - chat.PAD_V, full_w,
-                                   chat.PAD_V, POSSIZE)
-                    top.setVisible(True)
-                    filler_index += 1
-                    bottom = self._filler(filler_index)
-                    bottom.getModel().BackgroundColor = bubble_colour
-                    bottom.setPosSize(px,
-                                      row["y"] - used + row["h"], full_w,
-                                      chat.PAD_V, POSSIZE)
-                    bottom.setVisible(True)
-                    filler_index += 1
-                    left = self._filler(filler_index)
-                    left.getModel().BackgroundColor = bubble_colour
-                    left.setPosSize(px, row["y"] - used, chat.PAD_H,
-                                    row["h"], POSSIZE)
-                    left.setVisible(True)
-                    filler_index += 1
-                    right = self._filler(filler_index)
-                    right.getModel().BackgroundColor = bubble_colour
-                    right.setPosSize(px + text_w + chat.PAD_H, row["y"] - used,
-                                     max(full_w - chat.PAD_H - text_w, 4),
-                                     row["h"], POSSIZE)
-                    right.setVisible(True)
-                    filler_index += 1
+                            self._rect(fi, px, gap_top + 1, full_w, seam - 2,
+                                       bubble_colour)
+                            fi += 1
+
+                    # left / right rings (the text is inset inside the bubble)
+                    self._rect(fi, px, y, chat.PAD_H, row["h"], bubble_colour); fi += 1
+                    self._rect(fi, px + chat.PAD_H + text_w, y,
+                               max(full_w - chat.PAD_H - text_w, 4), row["h"],
+                               bubble_colour)
+                    fi += 1
+                    # top / bottom strips
+                    self._rect(fi, px, y - chat.PAD_V, full_w, chat.PAD_V,
+                               bubble_colour)
+                    fi += 1
+                    self._rect(fi, px, y + row["h"], full_w,
+                               chat.PAD_V_BOTTOM, bubble_colour)
+                    fi += 1
+
+                    # ROUNDED OUTER CORNERS: pane-coloured covers on the very
+                    # outside of each turn -- the run's first row gets two at
+                    # the top, and the run's last row two at the bottom. The
+                    # outer silhouette is cut by R on each corner while the
+                    # inside stays rectangular.
+                    if previous is None or previous.get("who") != who:
+                        top_y = y - chat.PAD_V
+                        self._rect(fi, px, top_y, R, 1, OUTER); fi += 1
+                        self._rect(fi, px, top_y, 1, R, OUTER); fi += 1
+                        self._rect(fi, bx_right - R, top_y, R, 1, OUTER); fi += 1
+                        self._rect(fi, bx_right - 1, top_y, 1, R, OUTER); fi += 1
                     previous = row
                 else:
-                    if index == 0 or self._plan["rows"][index - 1].get("visible"):
-                        previous = None      # a hidden row breaks the run
+                    if previous is not None:
+                        # close the turn at the previous visible row: bottom
+                        # corner covers (the pane gets the last word at the
+                        # outer corners)
+                        pw = max(int(width * (1 - previous.get("right", 0))
+                                     - previous["x"]) - 2, 20)
+                        px_o = previous["x"]
+                        bot_y = (previous["y"] - used + previous["h"]
+                                 + chat.PAD_V_BOTTOM)
+                        self._rect(fi, px_o, bot_y - 1, R, 1, OUTER); fi += 1
+                        self._rect(fi, px_o, bot_y - R, 1, R, OUTER); fi += 1
+                        self._rect(fi, px_o + pw - R, bot_y - 1, R, 1, OUTER); fi += 1
+                        self._rect(fi, px_o + pw - 1, bot_y - R, 1, R, OUTER); fi += 1
+                    previous = None
                     ctl.setVisible(False)
+            # a run that reaches the pane's end still gets bottom covers
+            if previous is not None:
+                pw = max(int(width * (1 - previous.get("right", 0))
+                             - previous["x"]) - 2, 20)
+                px_o = previous["x"]
+                bot_y = (previous["y"] - used + previous["h"]
+                         + chat.PAD_V_BOTTOM)
+                self._rect(fi, px_o, bot_y - 1, R, 1, OUTER); fi += 1
+                self._rect(fi, px_o, bot_y - R, 1, R, OUTER); fi += 1
+                self._rect(fi, px_o + pw - R, bot_y - 1, R, 1, OUTER); fi += 1
+                self._rect(fi, px_o + pw - 1, bot_y - R, 1, R, OUTER); fi += 1
+            for stale in self._fillers[fi:]:
+                try:
+                    stale.setVisible(False)
+                except Exception:
+                    pass
             # Hide pool entries this render did not use.
             for stale in self._transcript_pool[len(rendered):]:
                 try:
                     stale.setVisible(False)
                 except Exception:
                     pass
-            for stale in self._fillers[filler_index:]:
+            for stale in self._fillers[fi:]:
                 try:
                     stale.setVisible(False)
                 except Exception:

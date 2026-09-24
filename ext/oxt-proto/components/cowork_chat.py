@@ -39,9 +39,9 @@ GAP_MSG = 60         # between speakers — the strongest visual break
 GAP_CODE = 4
 # Inner padding: the label is inset inside its bubble by PAD_H on each side,
 # and colour strips fill the ring between bubble edge and text.
-PAD_H = 18
-PAD_V = 6            # visible padding above/below the text (drawn as strips,
-                     # so the label itself keeps its calibrated geometry)
+PAD_H = 14           # left/right: pure strip
+PAD_V = 8            # top strip adds to the label's intrinsic ~6 -> ~14
+PAD_V_BOTTOM = 12    # bottom strip adds to the label's intrinsic ~2-3 -> ~14
 RULE_HEIGHT = 4
 BAR_W = 10           # vertical scrollbar width
 BAR_GAP = 2
@@ -63,6 +63,7 @@ CODE_TEXT = 0xDDDDDD
 TEXT = 0xE6E7E9            # assistant body text
 MUTED = 0x909090
 RULE_BG = 0x3A3D44
+COMPOSER_BG = 0x27262B      # the pill the composer sits in (matches MODEL_BG's family)
 PLAIN_BG = MODEL_BG = 0x2B2E34
 TEXT_PLAIN = TEXT
 

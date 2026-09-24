@@ -2147,3 +2147,35 @@ Two remissions from the user's latest screenshot:
      edge. PAD_V strips above and below the label extend the bubble by 6 units
      on each end (disjoint rectangles again). Top/bottom/left/right rings, all
      bubble-coloured; the text label sits in the middle of a made box.
+
+---
+
+# F67 -- Composer pill, outer rounding, padding balance; scroll verdict remains open
+
+Shipped in this batch (from the Claude-for-Word screenshot):
+
+  * Balanced padding: PAD_H 14, top strip 8 (+ intrinsic label ~6 -> ~14
+    visible), bottom strip 12 (+ ~2 -> ~14). Sides and verticals now match.
+  * ROUNDED OUTER CORNERS implemented with pane-coloured covers: the bubble is
+    a made surface, so its outer corners get small PANEL_BG cuts (R=3) at the
+    turn boundary only -- run start gets two top cuts, run end two bottom
+    cuts. The inside stays rectangular. Same mechanism rounds the composer.
+  * The composer is now a Claude-style pill ON the canvas: borderless Edit
+    with our own COMPOSER_BG, the accent-filled Send button inside the pill
+    (Clear/Copy flat below), a chrome ring, and corner cuts -- painted from a
+    dedicated CHROME pool so transcript redraws cannot eat it.
+  * Bugs found en route and fixed before installing: bare COMPOSER_HEIGHT
+    (the unresolved-names checker caught it), and a stale .oxt the rebuild
+    had not refreshed (now verified against the installed copy by grep).
+
+SCROLLBAR: the instrumented experiment remains INCONCLUSIVE. Facts: the bar
+has a real range (ScrollValueMax=152 with a live conversation), the listener
+is attached (log), and _on_scroll repositions from the cached stack. But
+driving the scrollbar over the UNO bridge could not be observed: the bridge
+cannot call XScrollBar.setValue (pyuno type-conversion failure), model-side
+ScrollValue writes do not fire adjustment events, and no xdotool/XTEST path
+exists to synthesise a real drag on the sandbox X server. What we know: the
+plumbing is present and correct-by-construction (unit-covered plan math, live
+listener attach, honouring of the user offset once autoscroll disarms). What
+we cannot claim: that a real drag scrolls -- that now needs a human try or a
+GUI-recorded session. Not claimed as fixed.
