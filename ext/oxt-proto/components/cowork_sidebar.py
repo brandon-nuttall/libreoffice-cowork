@@ -658,6 +658,14 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         # compensates for.
         self._control(container, "pnlTranscript", "UnoControlContainer",
                       "UnoControlContainerModel")
+        # The chat paints its own surface so bubble/pane contrast is ours to
+        # set, not the theme's.
+        try:
+            self._control_by_name("pnlTranscript").getModel().BackgroundColor = (
+                chat.PANEL_BG)
+        except Exception:
+            _log("painting the transcript surface failed:\n%s"
+                 % traceback.format_exc())
 
 
         self._control(container, "scrTranscript", "UnoControlScrollBar",
@@ -1252,7 +1260,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                 ctl = self._pool_slot(index)
                 try:
                     model = ctl.getModel()
-                    model.Label = st.get("prefix", "") + text
+                    model.Label = chat.bind_dashes(st.get("prefix", "") + text)
                     model.MultiLine = True
                     model.FontName = _MONO_FONT if st["mono"] else _SANS_FONT
                     model.FontHeight = 10 + st["size_delta"]

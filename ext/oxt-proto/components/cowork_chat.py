@@ -23,13 +23,13 @@ CENTER_MUTED = "center_muted"
 
 MARGIN = 6           # outer margin; the transcript container sits at this
 USER_INSET = 14      # left inset of the user bubble, suggesting the side
-BLOCK_PAD = 4        # vertical padding added below observed content height
-BUBBLE_PAD = 8       # extra below-content padding inside a user bubble
-GAP_BLOCK = 16       # between paragraphs of the same speaker
-GAP_HEADING_BEFORE = 36
-GAP_HEADING_AFTER = 8
-GAP_MSG = 90         # between speakers — the strongest visual break
-GAP_CODE = 10
+BLOCK_PAD = 2        # vertical padding added below observed content height
+BUBBLE_PAD = 6       # extra below-content padding inside a user bubble
+GAP_BLOCK = 8        # between paragraphs of the same speaker
+GAP_HEADING_BEFORE = 24
+GAP_HEADING_AFTER = 4
+GAP_MSG = 60         # between speakers — the strongest visual break
+GAP_CODE = 6
 RULE_HEIGHT = 4
 BAR_W = 10           # vertical scrollbar width
 BAR_GAP = 2
@@ -38,12 +38,37 @@ EDGE = 4             # right-side breathing room inside the container
 # client; one feels sticky.
 WHEEL_LINES = 3
 
-# Colors — the panel's dark palette (see cowork_sidebar).
-USER_BG = 0x46484E
-CODE_BG = 0x2B2B2B
-MUTED = 0x9A9A9A
-PLAIN_BG = -1        # toolkit default
-TEXT_PLAIN = -1      # toolkit default text
+# Colors -- one explicit palette, painted by the panel itself.
+# BackgroundColor=-1 ("toolkit default") made contrast a property of whichever
+# theme the user runs; every surface here is a stated colour, so the chat reads
+# identically in light and dark themes.
+PANEL_BG = 0x1B1C1F        # the transcript surface, clearly darker than any theme
+USER_BG = 0x543F33         # the user's bubble: the accent hue, unmistakable
+USER_TEXT = 0xFFFFFF
+CODE_BG = 0x232529
+CODE_TEXT = 0xDDDDDD
+TEXT = 0xE6E7E9            # assistant body text
+MUTED = 0x909090
+RULE_BG = 0x3A3D44
+PLAIN_BG = PANEL_BG
+TEXT_PLAIN = TEXT
+
+# Dash binding: agents write -- and - separators heavily; LibreOffice breaks
+# lines AFTER a dash, leaving a dangling dash at end-of-line. Binding the dash
+# to the following word with a no-break space pushes the break to BEFORE the
+# dash, where a dash leading the next line reads fine.
+NBSP = "\u00a0"
+_BINDINGS = (("\u2014 ", "\u2014" + NBSP), ("\u2013 ", "\u2013" + NBSP),
+             (" - ", " -" + NBSP), ("- ", "-" + NBSP))
+
+
+def bind_dashes(text):
+    """Stop a dash from dangling at end-of-line."""
+    if not text:
+        return text
+    for before, after in _BINDINGS:
+        text = text.replace(before, after)
+    return text
 
 
 def style_for(block):
@@ -56,7 +81,7 @@ def style_for(block):
     kind = block.get("kind", PARAGRAPH)
     who = block.get("who")
     base = {"mono": False, "size_delta": 0, "weight": 100.0, "align": 0,
-            "fg": TEXT_PLAIN, "bg": PLAIN_BG, "observed": True}
+            "fg": TEXT, "bg": PANEL_BG, "observed": True}
     if kind == HEADING:
         base.update(weight=150.0, size_delta=3, gap_before=GAP_HEADING_BEFORE,
                     gap_after=GAP_HEADING_AFTER)
@@ -65,10 +90,11 @@ def style_for(block):
         base.update(prefix="\u2022 ")
         x, wi = 8, EDGE + 4
     elif kind == CODE:
-        base.update(mono=True, bg=CODE_BG, gap_before=GAP_CODE, gap_after=GAP_CODE)
+        base.update(mono=True, bg=CODE_BG, fg=CODE_TEXT,
+                    gap_before=GAP_CODE, gap_after=GAP_CODE)
         x, wi = 8, EDGE + 4
     elif kind == RULE:
-        base.update(bg=0x555555, observed=False, fixed_h=RULE_HEIGHT)
+        base.update(bg=RULE_BG, observed=False, fixed_h=RULE_HEIGHT)
         x, wi = 8, EDGE + 8
     elif kind in (CENTER, CENTER_MUTED):
         base.update(align=1)
@@ -76,8 +102,8 @@ def style_for(block):
             base["fg"] = MUTED
         x, wi = 0, EDGE
     elif who == "you":
-        base.update(bg=USER_BG, gap_before=GAP_MSG, gap_after=GAP_MSG,
-                    pad_b=BUBBLE_PAD)
+        base.update(bg=USER_BG, fg=USER_TEXT, gap_before=GAP_MSG,
+                    gap_after=GAP_MSG, pad_b=BUBBLE_PAD)
         x, wi = USER_INSET, EDGE + 4
     else:
         base.update(gap_before=GAP_BLOCK, gap_after=GAP_BLOCK)

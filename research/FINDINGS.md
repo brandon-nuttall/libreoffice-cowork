@@ -1961,3 +1961,34 @@ not at any API we can reach:
     itself still works, as does dragging and keyboard on a focused bar. A
     cleaner fix belongs upstream (expose wheel in UNO AWT), not in workarounds
     here.
+
+---
+
+# F59 — Contrast owned, gaps halved again, and the dangling-dash wrap
+
+## Contrast is now OUR property, not the theme's
+
+BackgroundColor=-1 ("toolkit default") on labels made the chat's readability a
+function of whatever theme the user runs; that is why the bubble read fine in
+one sandbox and failed on the user's dark theme twice. The transcript area now
+paints its own surface (PANEL_BG 0x1B1C1F, set on the container at build) and
+every label carries explicit fg/bg: assistant 0xE6E7E9 on that surface, the
+user's bubble in the accent hue 0x543F33 with white text, code 0xDDDDDD on
+0x232529, rules 0x3A3D44. Verified in-process: container model reads 0x1b1c1f.
+
+## The sparse look was the gaps arguing with the calibrated pitch
+
+After live calibration showed a line pitch of ~36 units, the constant gaps
+(paragraph 40, speaker 160) were multiples of a line. Cut again: paragraph 8,
+speaker 60, heading before/after 24/4, code 6, pads 2/6. A paragraph gap is now
+about a quarter of a line; a speaker change about a line and a half.
+
+## The wonky wrap: LibreOffice breaks AFTER dashes
+
+Agents write — and - as separators constantly. The toolkit's line breaker
+breaks after a dash, so lines end with a dangling "-". Fixed by binding every
+dash to the following word with a no-break space (bind_dashes at display time
+only — the clipboard path keeps plain text). Breaks now land BEFORE the dash:
+the next line STARTS with the dash, which reads fine. Honest residue:
+hyphenated words ("byte-identical") can still split at their internal hyphen —
+that is inside the toolkit's breaker, with no API to influence it.
