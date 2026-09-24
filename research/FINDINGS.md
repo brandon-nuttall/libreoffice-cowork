@@ -1880,3 +1880,49 @@ Verification: unit suite green incl. new `test-chat-layout.py`; sandbox run
 with a live turn shows zero tracebacks, live calibration, and 27,169 pixels of
 exact user-bubble colour in the expected band; the office clipboard service
 round-trips the exact DataFlavor shape the panel emits.
+
+---
+
+# F57 — Four user findings on the bubbles, and what each one really was
+
+The first bubble build reached the user's screen. Their feedback, mapped:
+
+1. **"when i scroll up with the scrollbar i can't see my initial message"** —
+   REAL BUG. When the Edit was swapped back for container+scrollbar, the
+   adjustment listener was never re-attached: dragging the scrollbar fired
+   nothing, and every render re-pinned the view to the bottom. The top of the
+   conversation was unreachable. Fixed at build time (listener attached and
+   logged); `_on_scroll` repositions from the cached stack without re-measure.
+
+2. **"mouse wheel inside the chat doesn't work at all"** — PLATFORM FACT, not a
+   bug we dropped: `XMouseWheelListener` and even the `MouseWheelEvent` struct
+   are ABSENT from this LibreOffice's UNO type registry (`uno.createUnoStruct`
+   says "unknown"), so there is no wheel surface to hook. Everything is
+   documented twice in this repo now. What works: native wheel over the
+   scrollbar strip itself, dragging, keyboard when the bar has focus. The first
+   workaround attempt (`_HAS_WHEEL`, `_WheelListener`, per-label registration)
+   was deleted as dead code.
+
+3. **"the markdown renderer is very sparse — so many newlines between lines"** —
+   REAL. Gaps were tuned at the old full-scale (para 40, speaker 160, heading
+   70/20, code 24, pads 8/14) while the calibrated line pitch is a fraction of
+   that on this backend, so every paragraph gap looked like 2+ blank lines.
+   Compacted: para 16, speaker 90, heading 36/8, code 10, pads 4/8. The plan
+   unit tests carry those numbers.
+
+4. **"not much contrast between bubble and background — have we simply not
+   implemented a background yet?"** — Implemented but too subtle: 0x3A3A3A
+   against a ~0x2C2C2C theme. Raised to 0x46484E.
+
+PROCESS NOTES, recorded because they cost hours:
+
+  * DOM ordering: hidden-measure was SUSPECTED (hidden controls reporting
+    garbage bounds) and DISPROVEN by probe — hidden and visible bounds were
+    byte-identical. Ruling things OUT with cheap probes is rare and worth
+    logging when it happens.
+  * The sandbox pixel-verification channel is UNSTABLE: this session's office
+    restored a maximized window state producing `parent=232x1163` (taller than
+    the 1000px screen), auto-collapsed sidebars, and dark regions (#2C2C2C) that
+    pixel scans cannot distinguish from the panel. The in-process probe — read
+    the pool controls' model and geometry through UNO — is the reliable
+    verifier; screenshots are now for humans only.

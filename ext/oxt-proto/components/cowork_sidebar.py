@@ -566,6 +566,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         # Initialised in __init__ so the first render cannot touch an attribute
         # that does not exist yet — the _transcript_bubbles crash of F51.
         self._pnl = None
+        self._used_offset = 0
         self._transcript_width = 0
         self._transcript_view = 0
         self._transcript_pool = []
@@ -650,17 +651,28 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         # compensates for.
         self._control(container, "pnlTranscript", "UnoControlContainer",
                       "UnoControlContainerModel")
-        self._pnl = self._control_by_name("pnlTranscript")
-        if self._pnl is not None:
-            peer = self._pnl
-            # Children must be created against the parent's peer.
-            self._transcript_peer_holder = peer
+
 
         self._control(container, "scrTranscript", "UnoControlScrollBar",
                       "UnoControlScrollBarModel",
                       Orientation=1,      # VERTICAL
                       ScrollValue=0, ScrollValueMax=0, BlockIncrement=40,
                       LineIncrement=11)
+        # THE ADJUSTMENT LISTENER IS NOT OPTIONAL. The first bubble build
+        # relayed the scrollbar into existence and never re-attached the
+        # listener the previous design had, so dragging did literally nothing
+        # and every render re-pinned the view to the bottom — the start of the
+        # conversation was unreachable.
+        bar = self._control_by_name("scrTranscript")
+        if bar is not None:
+            scroll_listener = _ScrollListener(self)
+            try:
+                bar.addAdjustmentListener(scroll_listener)
+                self._listeners.append(scroll_listener)
+                _log("scrollbar adjustment listener attached")
+            except Exception:
+                _log("could not attach the scrollbar listener:\n%s"
+                     % traceback.format_exc())
 
         self._control(container, "lblStatus", "UnoControlFixedText",
                       "UnoControlFixedTextModel",
@@ -1279,6 +1291,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             self._plan = chat.plan(plan_rows, view, offset)
             self._stack = plan_rows
             used = self._plan["used_offset"]
+            self._used_offset = used
             for index, row in enumerate(self._plan["rows"]):
                 ctl = rendered[index]
                 if index >= len(rendered):
@@ -1322,6 +1335,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         """
         self._autoscroll = False
         self._scroll_offset = value
+        self._used_offset = value
         if not self._stack:
             self._render()
             return
@@ -1421,6 +1435,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         self._root = None
         self._panel = None
         self._pnl = None
+        self._used_offset = 0
         self._transcript_width = 0
         self._transcript_view = 0
         self._transcript_pool = []

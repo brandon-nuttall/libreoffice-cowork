@@ -23,20 +23,23 @@ CENTER_MUTED = "center_muted"
 
 MARGIN = 6           # outer margin; the transcript container sits at this
 USER_INSET = 14      # left inset of the user bubble, suggesting the side
-BLOCK_PAD = 8        # vertical padding added below observed content height
-BUBBLE_PAD = 14      # extra below-content padding inside a user bubble
-GAP_BLOCK = 40       # between paragraphs of the same speaker
-GAP_HEADING_BEFORE = 70
-GAP_HEADING_AFTER = 20
-GAP_MSG = 160        # between speakers — the strongest visual break
-GAP_CODE = 24
+BLOCK_PAD = 4        # vertical padding added below observed content height
+BUBBLE_PAD = 8       # extra below-content padding inside a user bubble
+GAP_BLOCK = 16       # between paragraphs of the same speaker
+GAP_HEADING_BEFORE = 36
+GAP_HEADING_AFTER = 8
+GAP_MSG = 90         # between speakers — the strongest visual break
+GAP_CODE = 10
 RULE_HEIGHT = 4
 BAR_W = 10           # vertical scrollbar width
 BAR_GAP = 2
 EDGE = 4             # right-side breathing room inside the container
+# Wheel: one notch moves this many calibrated lines. Three feels like a chat
+# client; one feels sticky.
+WHEEL_LINES = 3
 
 # Colors — the panel's dark palette (see cowork_sidebar).
-USER_BG = 0x3A3A3A
+USER_BG = 0x46484E
 CODE_BG = 0x2B2B2B
 MUTED = 0x9A9A9A
 PLAIN_BG = -1        # toolkit default
@@ -55,7 +58,7 @@ def style_for(block):
     base = {"mono": False, "size_delta": 0, "weight": 100.0, "align": 0,
             "fg": TEXT_PLAIN, "bg": PLAIN_BG, "observed": True}
     if kind == HEADING:
-        base.update(weight=150.0, size_delta=2, gap_before=GAP_HEADING_BEFORE,
+        base.update(weight=150.0, size_delta=3, gap_before=GAP_HEADING_BEFORE,
                     gap_after=GAP_HEADING_AFTER)
         x, wi = 0, EDGE
     elif kind == BULLET:
