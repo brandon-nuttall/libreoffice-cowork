@@ -223,11 +223,18 @@ class _RelayoutListener(unohelper.Base, XWindowListener):
         element.layout()
         if getattr(element, "_autosend_pending", False):
             element._autosend_pending = False
-            _log("autosend firing submit()")
-            try:
-                element.submit()
-            except Exception:
-                _log(traceback.format_exc())
+            # Only if the conversation is still empty. A second panel instance
+            # (a factory probe, or the sidebar rebuilding the deck) re-arms
+            # _autosend_pending, and without this check it submits the same text
+            # a second time and doubles the turn in the transcript.
+            if element._entries():
+                _log("autosend skipped: conversation already started")
+            else:
+                _log("autosend firing submit()")
+                try:
+                    element.submit()
+                except Exception:
+                    _log(traceback.format_exc())
 
     def windowShown(self, _event):
         if self.element is not None:
@@ -815,16 +822,31 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             self._streaming = False
             self._set_status(item[1] or "Working…")
         elif kind == "final":
+            was_streaming = self._streaming
             self._streaming = False
             self._set_busy(False)
             self._drop_status()
-            if item[1]:
-                self._append("Cowork", item[1])
+            entries = self._entries()
+            # The chunks already filled the last cowork entry. Replace its text
+            # with the authoritative final rather than appending a second copy —
+            # appending doubled every reply in the transcript.
+            if item[1] and was_streaming and entries \
+                    and entries[-1]["kind"] == "cowork":
+                entries[-1]["text"] = item[1]
+            elif item[1]:
+                entries.append({"kind": "cowork", "text": item[1]})
+            self._render()
         elif kind == "error":
+            was_streaming = self._streaming
             self._streaming = False
             self._set_busy(False)
             self._drop_status()
-            self._append("Cowork", item[1])
+            entries = self._entries()
+            if was_streaming and entries and entries[-1]["kind"] == "cowork":
+                entries[-1]["text"] = item[1]
+            else:
+                entries.append({"kind": "cowork", "text": item[1]})
+            self._render()
         elif kind == "pump":
             self._pump_once()
 

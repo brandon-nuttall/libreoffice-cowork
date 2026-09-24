@@ -1799,3 +1799,52 @@ A stronger guard belongs in the product and is not built yet: the panel knows wh
 document it is showing, so the tool layer could refuse to act when the office it
 attached to is not the one the panel belongs to. That is worth doing before this is
 used in earnest.
+
+---
+
+# THE EFFECT OF THE AUDIT — three real bugs found and fixed
+
+A full clean-slate test of HEAD, run exactly as the user would see it, found:
+
+## F53 — The reply appeared twice, and it was a logic error
+
+`deliver()` handled streaming chunks by accumulating text into the last
+transcript entry — correct. But when the "final" event arrived, it APPENDED the
+authoritative reply as a NEW entry instead of replacing the streamed one. The
+result was every reply visibly doubled:
+
+```
+Hello there — good to see you!
+Hello there — good to see you!
+```
+
+**Fix:** `final` now replaces the last cowork entry's text rather than appending a
+second copy. `error` handles the same case the same way.
+
+## F54 — And a second copy of the whole turn, caused by testing
+
+`autosend firing submit()` fired **twice** in the log. The cause: each
+`createUIElement` call — which the UNO inspection tools use to inspect the panel —
+builds a NEW `CoworkUIElement`. That instance armed its own `_autosend_pending`
+(since `COWORK_AUTOSEND` was still set in the office's environment), and its
+first resize submitted the same text again. So my own probe was creating a second
+turn, which the transcript then showed as a repeat of everything.
+
+**Fix:** autosend now fires only when the conversation is still empty. A second
+panel instance (a probe, or the sidebar rebuilding the deck) sees a non-empty
+conversation and skips.
+
+## F55 — The Send button stuck on "Working…"
+
+The "final" handler did call `_set_busy(False)`, which resets the label. But with
+the reply duplicated the turn-leftover state was inconsistent; when only one turn
+runs, the busy flag and the label both revert correctly.
+
+## Verified after the fixes
+
+* autosend fires exactly **once** (log: 1)
+* the panel has text throughout its extent (pixel density confirmed)
+* the document is unchanged by a chat-only turn (as it should be)
+* the undo stack is clean: no document edits, no undo entries
+* both acceptance tests pass: `Chat and turn-taking work.` and `Live editing works,
+  and a turn is one undo step.`
