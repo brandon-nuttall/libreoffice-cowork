@@ -2179,3 +2179,22 @@ plumbing is present and correct-by-construction (unit-covered plan math, live
 listener attach, honouring of the user offset once autoscroll disarms). What
 we cannot claim: that a real drag scrolls -- that now needs a human try or a
 GUI-recorded session. Not claimed as fixed.
+
+---
+
+# F68 -- The palette, the arrow, and the run-edge discipline
+
+From the working screenshot (first build the user could actually evaluate):
+
+  * SEND is an accent up-arrow INSIDE the pill (Claude's composition), and the
+    + button opens a REAL popup command palette (XPopupMenu from the
+    extension context): /new clears the conversation including the document
+    metadata, /copy copies it. Typing "/new" or "/copy" in the composer runs
+    the same actions. Clear/Copy buttons are gone -- utility buttons spent a
+    permanent row on three characters of typing.
+  * THE Z-AXIS BUG HAD A THIRD FACE: strips drawn per-row overlapped the
+    previous label's bottom by up to PAD_V, painting over text. Discipline
+    now: strips only at RUN EDGES; the seam filler paints the entire interior
+    band of a turn; rounding cuts (R=9, three orders brighter than the old
+    3-unit slivers) only on run top/bottom edges; hidden rows no longer close
+    a run (an off-viewport row is still inside its turn's bubble).

@@ -351,8 +351,13 @@ class _PanelListener(unohelper.Base, XActionListener, XTextListener):
             label = getattr(model, "Label", "")
         except Exception:
             label = ""
-        if label == "Clear":
-            element.clear()
+        # The + opens the command palette; the up-arrow submits. Clear and
+        # Copy live behind the palette now (slash commands), so the canvas
+        # spends no vertical space on utility buttons.
+        if label == "＋":
+            element._show_commands()
+        elif label == "/copy" or label == "Copy":
+            element._copy_transcript()
         else:
             element.submit()
 
@@ -1005,6 +1010,15 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             _log(traceback.format_exc())
             return
         if not text:
+            return
+        # Slash commands: /new and /copy, same actions as the + palette.
+        if text == "/new":
+            composer.setText("")
+            self.clear()
+            return
+        if text == "/copy":
+            composer.setText("")
+            self._copy_transcript()
             return
         try:
             composer.setText("")
