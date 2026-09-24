@@ -160,7 +160,12 @@ def plan(rows, view, offset=None):
         out.append({
             "key": row["key"],
             "x": row.get("x", 0),
-            "width_in": row.get("width_in", EDGE),
+            # POROUS handoff: the planner must carry the full geometry the
+            # renderer needs, or the apply pass silently re-inflates the
+            # width. 'right' dropped here was the model bubble's missing
+            # right-hand inset: measured at 75% width, drawn at ~95%.
+            "right": row.get("right", 0.0),
+            "who": row.get("who"),
             "y": top,
             "h": row["h"],
             # Visible when any part overlaps [offset, offset+view].

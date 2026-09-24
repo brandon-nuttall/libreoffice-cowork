@@ -2088,3 +2088,26 @@ One subtle bug caught by the new tests: moving inline-marker stripping to a
 helper that ran over raw lines ERASED the code-fence backticks, so no fence
 could ever open. Structure detection runs on raw lines; marker-stripping only
 on emitted run text.
+
+---
+
+# F64 — The model bubble's missing right inset, and seams that broke the illusion
+
+User's live screenshot showed model bubbles nearly edge-to-edge even though the
+measure pass had them at 5%/20%. The bug: `chat.plan()` REBUILDS the row dicts
+and only copied "x" and "width_in" -- silently dropping "right" and "who".
+The renderer's apply pass then recomputed each width as
+`width*(1-right) - x` with right defaulting to 0, re-inflating every measured
+75% bubble to ~95% the moment the plan was consumed. The measure pass was
+right; the hand-off between pure layout and renderer threw half the geometry
+away. plan() now passes right + who through, and a unit check pins the
+passthrough.
+
+Second finding from the same screenshot: each markdown block is its own
+control, so a model turn read as a stack of separate little boxes -- the
+opposite of the balanced mirroring asked for. Fix: SEAM FILLERS -- colour-
+matched strips (from a dedicated pool) that paint the gap between consecutive
+visible same-speaker rows in that speaker's bubble colour. Between different
+speakers the pane colour remains the separator, on both sides symmetrically:
+user turns are separate boxes by speaker, model turns now read as one bubble
+per turn, mirror-backed.

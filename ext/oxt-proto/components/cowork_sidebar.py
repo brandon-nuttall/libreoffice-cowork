@@ -577,6 +577,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         self._transcript_width = 0
         self._transcript_view = 0
         self._transcript_pool = []
+        self._fillers = []
         self._line_pitch = 0.0
         self._line_top = 0.0
         self._autoscroll = True
@@ -1165,6 +1166,21 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                                      "italic": False, "mono": False}]})
         return blocks
 
+    def _filler(self, index):
+        """Seam strips between same-speaker blocks (colour-matched)."""
+        pool = self._fillers
+        while len(pool) <= index:
+            ctl = self._new("UnoControlFixedText")
+            model = self._new("UnoControlFixedTextModel")
+            model.Label = ""
+            ctl.setModel(model)
+            try:
+                self._pnl.addControl("fill%d" % len(pool), ctl)
+            except Exception:
+                _log("filler addControl failed:\n%s" % traceback.format_exc())
+            pool.append(ctl)
+        return pool[index]
+
     def _pool_slot(self, index):
         """One label control per slot, created on demand and reused."""
         pool = self._transcript_pool
@@ -1303,7 +1319,8 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                     h = st["fixed_h"]
 
                 plan_rows.append({"key": "b%d" % index, "x": x,
-                                  "right": st["right_frac"], "h": h,
+                                  "right": st["right_frac"],
+                                  "who": block.get("who"), "h": h,
                                   "gap": gap})
                 ctl.setPosSize(x, y + gap, w, h, POSSIZE)
                 rendered.append(ctl)
@@ -1321,19 +1338,45 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             self._stack = plan_rows
             used = self._plan["used_offset"]
             self._used_offset = used
+            filler_index = 0
+            previous = None
             for index, row in enumerate(self._plan["rows"]):
                 ctl = rendered[index]
                 if index >= len(rendered):
                     break
                 if row["visible"]:
-                    ctl.setPosSize(row["x"], row["y"] - used,
-                                   max(int(width * (1 - row.get("right", 0)) - row["x"]) - 2, 20),
+                    w_row = max(int(width * (1 - row.get("right", 0)) - row["x"]) - 2, 20)
+                    ctl.setPosSize(row["x"], row["y"] - used, w_row,
                                    row["h"], POSSIZE)
                     ctl.setVisible(True)
+                    # Fill the seam between consecutive visible blocks of the
+                    # SAME speaker with that speaker's bubble colour; between
+                    # DIFFERENT speakers the pane colour IS the separator.
+                    if previous is not None and previous.get("who") == row.get("who"):
+                        gap_top = previous["y"] + previous["h"]
+                        seam = row["y"] - gap_top
+                        if seam > 3:
+                            fill = self._filler(filler_index)
+                            fill.getModel().BackgroundColor = (
+                                chat.USER_BG if row.get("who") == "you"
+                                else chat.MODEL_BG)
+                            # keep the bubble's own side-insets
+                            fill.setPosSize(row["x"], gap_top + 1, w_row,
+                                            seam - 2, POSSIZE)
+                            fill.setVisible(True)
+                            filler_index += 1
+                    previous = row
                 else:
+                    if index == 0 or self._plan["rows"][index - 1].get("visible"):
+                        previous = None      # a hidden row breaks the run
                     ctl.setVisible(False)
             # Hide pool entries this render did not use.
             for stale in self._transcript_pool[len(rendered):]:
+                try:
+                    stale.setVisible(False)
+                except Exception:
+                    pass
+            for stale in self._fillers[filler_index:]:
                 try:
                     stale.setVisible(False)
                 except Exception:
