@@ -2235,3 +2235,40 @@ Recorded as standing policy in setup.sh's final message: an install REQUIRES a
 LibreOffice restart, and "registered" refers to the profile, not the process.
 The sidebar log (~/.cache/cowork-sidebar.log) prints the exact control set on
 every build — reading it settles "which code is running" without guessing.
+
+---
+
+# F71 — "Failing to start", debugged properly: three bugs and a file of ghosts
+
+The user's report (LibreOffice fails to start, sidebar dead) decomposed into
+three REAL bugs plus one editorial cause, each found by evidence:
+
+  1. chat._COLOR_ACCENT — the buttons loop read the accent from the WRONG
+     module in a tuple evaluated before any guard; the panel build died the
+     moment a document opened with the deck active (their boot). Caught by
+     the new boot test verbatim at the exact line.
+  2. NameError 'R' at the end-of-run paint branch — a variable renamed in the
+     visible branch but not here; EVERY render failed once the build got
+     past (1). The sandbox boot test caught it in turn.
+  3. THE FILE WAS FOUR COPIES STITCHED TOGETHER (1759 lines in git; 4460 in
+     the working tree from uncommitted scripted edits). Python's last-wins
+     meant the stale copy 4 was LIVE while every marker grep found the new
+     code sitting in copy 1. This is why "verified markers" coexisted with
+     old behaviour for days. Recovery: restore from git (single-copy, 1759
+     lines), reapply the one real fix.
+  4. PROCESS lesson, hard-won twice this session: an office imports extension
+     code at process start; a running instance masks new installs; pkill -f
+     soffice kills the caller's own shell; "office up (1s)" was a pre-live
+     listener. Boot tests must run against a deliberately-fresh process.
+
+GUARDS ADDED so this class is dead:
+  * duplicate-top-level-definitions check (one definition per name; the
+    last-wins shadowing is exactly how 3 stayed invisible);
+  * cross-module attribute reads resolve against the real imported modules
+    (the chat._COLOR_ACCENT shape);
+  * tests/test-panel-build.py — builds the real panel in a live office and
+    asserts the current design's control set; now part of run-all, skipping
+    when no office is up.
+
+The deployed artifact itself is now boot-tested before install — the missing
+step that let (1) and (2) ship, twice.

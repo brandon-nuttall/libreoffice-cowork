@@ -734,7 +734,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         # Copy became slash commands -- utility buttons spent a permanent row
         # on three characters of typing.
         for name, label, colour in (("btnCommands", "\uff0b", None),
-                                    ("btnSend", "\u2191", chat._COLOR_ACCENT)):
+                                    ("btnSend", "\u2191", _COLOR_ACCENT)):
             button = self._control(container, name, "UnoControlButton",
                                    "UnoControlButtonModel",
                                    Label=label, PushButtonType=0)
@@ -1577,10 +1577,10 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                 px_o = previous["x"]
                 bot_y = (previous["y"] - used + previous["h"]
                          + chat.PAD_V_BOTTOM)
-                self._rect(fi, px_o, bot_y - 1, R, 1, OUTER); fi += 1
-                self._rect(fi, px_o, bot_y - R, 1, R, OUTER); fi += 1
-                self._rect(fi, px_o + pw - R, bot_y - 1, R, 1, OUTER); fi += 1
-                self._rect(fi, px_o + pw - 1, bot_y - R, 1, R, OUTER); fi += 1
+                R = 9
+                self._rect(fi, px_o, bot_y - 1, pw, 1, OUTER); fi += 1
+                self._rect(fi, px_o + 1, bot_y - R, 1, R, OUTER); fi += 1
+                self._rect(fi, px_o + pw - 2, bot_y - R, 1, R, OUTER); fi += 1
             for stale in self._fillers[fi:]:
                 try:
                     stale.setVisible(False)
@@ -1672,6 +1672,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         except Exception:
             _log("copy failed:\n%s" % traceback.format_exc())
 
+    @staticmethod
     def _describe_tool(name):
         """Turn a tool name into something a person understands.
 

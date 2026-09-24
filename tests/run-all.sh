@@ -34,6 +34,9 @@ run "panel wiring"       python3 tests/test-panel-wiring.py
 # Needs a live runtime; says so and exits 0 when there is none, so it does not
 # make the suite depend on one being up.
 run "conversation"       python3 tests/test-conversation.py
+# Boots the REAL panel against a live office: the one test that would have
+# caught every shipped build bug in this saga. Skips when no office is up.
+run "panel build"         python3 tests/test-panel-build.py
 # Needs an office with the extension AND a runtime, both targeting the same
 # office. Says so and exits 0 when they are not up.
 run "live edit + undo"   python3 tests/test-live-edit.py

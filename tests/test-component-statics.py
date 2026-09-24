@@ -18,6 +18,7 @@ definition in the file. `import time` went missing the same way and surfaced as
 """
 
 import ast
+import re
 import builtins
 import os
 import pathlib
@@ -67,6 +68,12 @@ def module_level_names(tree):
                             names.add(alias.asname or alias.name.split(".")[0])
                     elif isinstance(sub, (ast.FunctionDef, ast.ClassDef)):
                         names.add(sub.name)
+                    elif isinstance(sub, ast.Assign):
+                        # _HAS_MOUSE = True/False lives in the import try:
+                        # module-level assignments count wherever they sit.
+                        for target in sub.targets:
+                            if isinstance(target, ast.Name):
+                                names.add(target.id)
     return names
 
 
@@ -231,6 +238,56 @@ def check_manifest():
     check("every manifest entry has a file", not absent, absent)
 
 
+def duplicate_top_level_definitions(filename):
+    """One definition per top-level name. Python's LAST definition wins, so
+    duplicate class/function bodies shadow each other silently — this exact
+    failure shipped a four-copy cowork_sidebar.py where an old copy 4 was the
+    LIVE one while all marker greps found the new code sitting in copy 1.
+    """
+    with open(os.path.join(COMPONENTS, filename), encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    seen = {}
+    for node in tree.body:
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef)):
+            seen.setdefault(node.name, []).append(node.lineno)
+    for name, lines in sorted(seen.items()):
+        check("%s defines %r exactly once" % (filename, name),
+              len(lines) == 1, "duplicates at lines %s" % lines)
+
+
+def cross_module_attribute_reads():
+    """Every `module.NAME` read must resolve on the real imported module.
+
+    This check exists because `chat._COLOR_ACCENT` shipped: the sidebar read a
+    constant from the WRONG module in a tuple evaluated before any guard, the
+    panel build died outside every try, and the deck arrived empty. The syntax
+    `chat.X` is invisible to the method checker, which only tracks self.*.
+    """
+    import importlib
+    sys.path.insert(0, COMPONENTS)
+    pure = ("cowork_chat", "cowork_layout", "cowork_markdown")
+    pattern = re.compile(r"\b(cowork_chat|cowork_layout|cowork_markdown)\.([A-Za-z_][A-Za-z0-9_]*)")
+    seen = set()
+    for name in os.listdir(COMPONENTS):
+        if not name.endswith(".py"):
+            continue
+        with open(os.path.join(COMPONENTS, name), encoding="utf-8") as fh:
+            source = fh.read()
+        for mod, attr in pattern.findall(source):
+            key = (name, mod, attr)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                module = importlib.import_module(mod)
+            except Exception as exc:  # noqa: BLE001
+                check("import %s is pure and importable" % mod, False, exc)
+                continue
+            if not hasattr(module, attr):
+                check("%s reads %s.%s" % (name, mod, attr), False,
+                      "the module has no such attribute")
+
+
 def main():
     print("extension component statics\n")
     check_manifest()
@@ -240,7 +297,10 @@ def main():
         if not os.path.exists(path):
             continue
         analyse(path)
-        print()
+        duplicate_top_level_definitions("cowork_sidebar.py")
+    print()
+    cross_module_attribute_reads()
+    print()
     if FAILURES:
         print("FAILED: %d check(s): %s" % (len(FAILURES), ", ".join(FAILURES)))
         return 1

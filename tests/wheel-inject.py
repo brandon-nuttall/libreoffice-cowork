@@ -33,17 +33,25 @@ def main():
     parser.add_argument("y", type=int)
     parser.add_argument("--notches", type=int, default=1,
                         help="positive scrolls down, negative up")
+    parser.add_argument("--click", action="store_true",
+                        help="single left click at the point instead of wheel")
     args = parser.parse_args()
 
     disp = xdisplay.Display(args.display)
-    button = 5 if args.notches > 0 else 4      # 5 = wheel down, 4 = wheel up
     root = disp.screen().root
 
-    # Park the pointer on the target so the wheel lands on the intended window.
+    # Park the pointer on the target so the event lands on the intended window.
     xtest.fake_input(disp, Xlib_X.MotionNotify, x=int(args.x), y=int(args.y))
     disp.sync()
     time.sleep(0.1)
 
+    if args.click:
+        xtest.fake_input(disp, Xlib_X.ButtonPress, 1)
+        disp.sync(); time.sleep(0.03)
+        xtest.fake_input(disp, Xlib_X.ButtonRelease, 1)
+        disp.sync()
+        print("clicked at (%d, %d) on %s" % (args.x, args.y, args.display))
+        return
     for _ in range(abs(args.notches)):
         xtest.fake_input(disp, Xlib_X.ButtonPress, button)
         disp.sync()
