@@ -54,7 +54,20 @@ def uno_system_path_to_url(path):
     return uno.systemPathToFileUrl(path)
 
 
+_PARSE_FAILURES = 0       # consecutive office-parse failures, module-wide
+_PARSE_DISABLE_AFTER = 3
+
+
 def parse_with_office(ctx, text):
+    global _PARSE_FAILURES
+    # Circuit breaker: on this reporter's Wayland session the hidden-document
+    # load raised forever, 600 times per conversation, each attempt costing a
+    # window flash and making the sidebar felt broken. After three consecutive
+    # failures parsing via the office is disabled for the session and the plain
+    # fallback takes over.
+    if _PARSE_FAILURES >= _PARSE_DISABLE_AFTER:
+        raise RuntimeError("office parsing disabled after repeated failures")
+
     """Parse markdown with LibreOffice's own filter and return styled blocks.
 
     `ctx` is a UNO component context, which the panel has. Returns a list of
@@ -80,12 +93,24 @@ def parse_with_office(ctx, text):
             item.Value = value
             return item
 
-        doc = desktop.loadComponentFromURL(
-            uno_system_path_to_url(path), "_blank", 0,
-            (prop("Hidden", True), prop("FilterName", "Markdown"),
-             prop("ReadOnly", True)))
+        from com.sun.star.document import MacroExecutionMode
         try:
-            return _read_blocks(doc)
+            doc = desktop.loadComponentFromURL(
+                uno_system_path_to_url(path), "_blank", 0,
+            (prop("Hidden", True), prop("FilterName", "Markdown"),
+             prop("ReadOnly", True),
+             # Parsing must never run code. A temp chat document has no macro,
+             # and the user should never see a macro-security dialog because of
+             # the sidebar.
+             prop("MacroExecutionMode", MacroExecutionMode.NEVER_EXECUTE)))
+            load_ok = True
+        except Exception:
+            _PARSE_FAILURES += 1
+            raise
+        try:
+            result = _read_blocks(doc)
+            _PARSE_FAILURES = 0
+            return result
         finally:
             try:
                 doc.close(False)

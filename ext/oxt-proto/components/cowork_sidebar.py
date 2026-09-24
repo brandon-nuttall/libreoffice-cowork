@@ -906,6 +906,17 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         cached = entry.get("_blocks")
         if cached is not None and entry.get("_parsed_from") == text:
             return cached
+        # While text is streaming in, chunk lengths change every render; PARSE
+        # ONLY ONCE, when the turn ends. The mid-stream view is a plain
+        # paragraph (this function returns unstyled blocks then), which also
+        # keeps a half-written reply from flashing structured styling that
+        # changes as the words arrive.
+        if getattr(self, "_streaming", False) and entry is self._entries()[-1]:
+            entry["_blocks"] = [{"kind": markdown.PARAGRAPH,
+                                 "runs": [{"text": text, "bold": False,
+                                           "italic": False, "mono": False}]}]
+            entry["_parsed_from"] = text
+            return entry["_blocks"]
         try:
             blocks = markdown.parse_with_office(self.ctx, text)
         except Exception:
@@ -1304,9 +1315,12 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                 prev = block
 
             total = y
-            offset = None
-            if self._autoscroll:
-                offset = None           # plan() pins to the newest
+            # PASS THE USER'S OFFSET. Passing None unconditionally -- what this
+            # line did before -- re-pinned the view to the bottom on every
+            # render, which during streaming meant many times a second: the
+            # scrollbar "didn't work" because drags were overwritten within
+            # milliseconds.
+            offset = None if self._autoscroll else self._scroll_offset
             self._plan = chat.plan(plan_rows, view, offset)
             self._stack = plan_rows
             used = self._plan["used_offset"]

@@ -1992,3 +1992,31 @@ only — the clipboard path keeps plain text). Breaks now land BEFORE the dash:
 the next line STARTS with the dash, which reads fine. Honest residue:
 hyphenated words ("byte-identical") can still split at their internal hyphen —
 that is inside the toolkit's breaker, with no API to influence it.
+
+---
+
+# F60 — The user's session log told us everything; we just had to look
+
+User reports: other LibreOffice windows opening, scrollbar dead, the harness
+struggling, and a macro-security dialog. The sidebar log held the answers:
+
+  * `cowork_markdown.py` crashed on EVERY parse on their Wayland session —
+    600× for `createEnumeration` and `getString` — because new streaming
+    entries re-parsed on every chunk. Save-side structure came from cached
+    `_blocks` riding in old metadata, which is why structured bullets still
+    showed. FIXES: parse once per TURN (mid-stream renders as a plain
+    paragraph), a circuit breaker after three consecutive office-failures,
+    failure counting with success reset, and — for the macro dialog —
+    `MacroExecutionMode = NEVER_EXECUTE` on every parse load.
+  * The scrollbar bug was in plain sight in my own `_render`: BOTH branches of
+    the offset expression passed `None`, so every render re-pinned the bottom;
+    during streaming that is dozens of pins per second. The manual offset is
+    now honoured (`None` only while autoscroll is armed).
+  * No macro is ever invoked by tools anywhere in the logs ("macro" appears
+    only inside AEJ: Macroeconomics citations). The dialog was LibreOffice
+    reacting to temp-document loads. The persona now states it as policy:
+    no second soffice (bash included), no windows, no Basic macros, no macro
+    URLs — report tool failure instead of improvising processes.
+
+Best practice distilled into the persona (rule 5): act on the OPEN document
+through the tools; if a tool fails, say so rather than spawning processes.
