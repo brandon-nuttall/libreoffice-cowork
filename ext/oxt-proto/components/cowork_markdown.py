@@ -250,3 +250,83 @@ def gap_before(block, previous):
     if previous["kind"] in (SPEAKER, HEADING):
         return GAP_TIGHT
     return GAP_TIGHT
+
+
+def parse_fallback(text):
+    """Parse markdown WITHOUT the office — pure python, structural only.
+
+    The office parse is best (real filter, real styling) but it cannot be used
+    everywhere: on one Wayland session it failed permanently, and the previous
+    "fallback" to a single plain paragraph then displayed RAW markdown --
+    literal ** markers and ## headings -- in the transcript. This parser keeps
+    structure when the office route is unavailable: headings, bullets,
+    numbered lists, code fences and rules. Inline emphasis is dropped, exactly
+    as the sidebar design intends.
+    """
+    blocks = []
+
+    def para(line):
+        blocks.append({"kind": "paragraph",
+                       "runs": [{"text": line, "bold": False, "italic": False,
+                                 "mono": False}]})
+
+    # Inline markers are stripped: the office parser removes them, and the
+    # fallback must not show literal ** or backticks just because the office
+    # route is unavailable. Runs stay single-text (no emphasised spans).
+    def clean(line):
+        return line.replace("**", "").replace("`", "")
+
+    lines = clean((text or "")).replace("\r\n", "\n").split("\n")
+    in_code = False
+    code_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if in_code:
+            if stripped.startswith("```"):
+                blocks.append({"kind": "code",
+                               "runs": [{"text": "\n".join(code_lines),
+                                         "bold": False, "italic": False,
+                                         "mono": True}]})
+                code_lines = []
+                in_code = False
+            else:
+                code_lines.append(line)
+            continue
+        if stripped.startswith("```"):
+            in_code = True
+            continue
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            level = len(stripped) - len(stripped.lstrip("#"))
+            words = stripped[level:].strip()
+            blocks.append({"kind": "heading",
+                           "runs": [{"text": words, "bold": True,
+                                     "italic": False, "mono": False}],
+                           "level": level})
+            continue
+        if stripped in ("---", "***", "___") and len(set(stripped)) == 1:
+            blocks.append({"kind": "rule", "runs": []})
+            continue
+        if stripped.startswith("- ") or stripped.startswith("* "):
+            # A run of dashes in prose ("--- ") is text, not a bullet; the
+            # check above already routed exact rules.
+            blocks.append({"kind": "bullet",
+                           "runs": [{"text": stripped[2:].strip(), "bold": False,
+                                     "italic": False, "mono": False}]})
+            continue
+        ordered = None
+        for marker in ("1. ", "1) "):
+            pass
+        if len(stripped) > 2 and stripped[0].isdigit() and stripped[1] in ".)" \
+                and stripped[2] == " ":
+            blocks.append({"kind": "bullet",
+                           "runs": [{"text": stripped[3:].strip(), "bold": False,
+                                     "italic": False, "mono": False}]})
+            continue
+        para(line.rstrip())
+    if code_lines:
+        blocks.append({"kind": "code",
+                       "runs": [{"text": "\n".join(code_lines), "bold": False,
+                                 "italic": False, "mono": True}]})
+    return blocks

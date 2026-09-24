@@ -2042,3 +2042,26 @@ Persona rule 5 now names the affordance and the prohibition together: use
 scratchpad; never another document, never a second soffice, never macros --
 the user sees every window and dialog, and improvisation reads as the harness
 losing control of itself.
+
+---
+
+# F62 — Mirrored fraction geometry, a visible model bubble, and structure without the office
+
+From the user's screenshot (first time the bubbles were on MY screen too):
+
+  * Geometry is now FRACTIONS of the pane width, mirrored per WhatsApp: the
+    user's bubble 20% from the left / 5% from the right; the model's content
+    5% / 20%. The old absolute-unit insets meant nothing across pane sizes.
+  * The model side gets a real bubble (MODEL_BG 0x2B2E34 vs pane 0x1B1C1F) --
+    the user asked twice why "the model message" had no contrast; the answer
+    had been "assistant content is unstyled per Claude-for-Word", but the user
+    prefers the chat-client look on this narrow pane and that is the product's
+    call, not the reference's.
+  * THE RAW MARKDOWN TELL: their screenshot showed literal ** and ## in the
+    transcript -- the single-paragraph fallback was dumping unparsed text.
+    New `parse_fallback` (pure python): headings, bullets, code fences, rules;
+    inline markers stripped. The office parse remains first choice; the
+    fallback now keeps structure without it.
+  * Scratchpad is PER DOCUMENT (keyed by session id, which the runtime scopes
+    one per document), not one shared file -- Writer in one window and slides
+    in another must not share margin notes.

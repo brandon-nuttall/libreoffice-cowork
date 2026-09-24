@@ -920,11 +920,12 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         try:
             blocks = markdown.parse_with_office(self.ctx, text)
         except Exception:
-            _log("markdown parse failed; falling back to plain text:\n%s"
-                 % traceback.format_exc())
-            blocks = [{"kind": markdown.PARAGRAPH,
-                       "runs": [{"text": text, "bold": False, "italic": False,
-                                 "mono": False}]}]
+            # Office parse unavailable (circuit breaker, or the session's
+            # Wayland quirk): keep STRUCTURE via the pure-python parser rather
+            # than showing raw markdown -- literal ** markers in the pane were
+            # the visible symptom of the old single-paragraph fallback.
+            _log("office parse unavailable; structural fallback in use")
+            blocks = markdown.parse_fallback(text)
         entry["_blocks"] = blocks
         entry["_parsed_from"] = text
         return blocks
@@ -1282,8 +1283,8 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                 except Exception:
                     _log("configure failed:\n%s" % traceback.format_exc())
 
-                w = max(width - st["width_in"] - 2, 20)
-                x = st["x"]
+                x = int(width * st["x_frac"])
+                w = max(int(width * (1 - st["x_frac"] - st["right_frac"])) - 2, 20)
                 if st["observed"]:
                     # Pass 1: generous height, final width and position, so the
                     # toolkit wraps at the real width.
@@ -1307,7 +1308,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                     h = st["fixed_h"]
 
                 plan_rows.append({"key": "b%d" % index, "x": x,
-                                  "width_in": st["width_in"], "h": h,
+                                  "right": st["right_frac"], "h": h,
                                   "gap": gap})
                 ctl.setPosSize(x, y + gap, w, h, POSSIZE)
                 rendered.append(ctl)
@@ -1331,7 +1332,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                     break
                 if row["visible"]:
                     ctl.setPosSize(row["x"], row["y"] - used,
-                                   max(width - row["width_in"] - 2, 20),
+                                   max(int(width * (1 - row.get("right", 0)) - row["x"]) - 2, 20),
                                    row["h"], POSSIZE)
                     ctl.setVisible(True)
                 else:
@@ -1384,7 +1385,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                 ctl = pool[index]
                 if row["visible"]:
                     ctl.setPosSize(row["x"], row["y"] - refreshed["used_offset"],
-                                   max(width - row["width_in"] - 2, 20),
+                                   max(int(width * (1 - row.get("right", 0)) - row["x"]) - 2, 20),
                                    row["h"], POSSIZE)
                     ctl.setVisible(True)
                 else:

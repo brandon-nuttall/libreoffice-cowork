@@ -21,6 +21,8 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { readFile, unlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -286,13 +288,21 @@ export function apply(ctx, config = {}) {
   // This is the first-class version: a plain file, no UI involved, scoped to
   // this runtime process (which is how session scoping already works for the
   // turn registry above).
-  const scratchPath = process.env.COWORK_SCRATCHPAD
-    ?? join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'scratchpad.md')
+  // PER DOCUMENT: the scratchpad is keyed by the agent's session, which the
+  // runtime already scopes one-per-document -- working on a Writer doc in one
+  // session and slides in another must not share margin notes. COWORK_SCRATCH
+  // overrides for tests.
+  const scratchDir = process.env.COWORK_SCRATCH_DIR ?? tmpdir()
+  const scratchFor = (exec) => {
+    const id = exec?.agent?.session?.id ?? 'anonymous'
+    return process.env.COWORK_SCRATCH
+      ?? join(scratchDir, `cowork-scratch-${String(id).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24)}.md`)
+  }
   register({
     name: 'scratchpad',
     description:
       'A private scratchpad: draft, rehearse and hold intermediate state here ' +
-      'before editing the document. A plain file -- no window, no UI, and it ' +
+      'before editing the document. A plain file scoped to THIS document -- no window, no UI, and it ' +
       'never touches the user\'s document. Prefer this over improvising any ' +
       'other document.',
     parameters: {
@@ -300,28 +310,28 @@ export function apply(ctx, config = {}) {
       text: { type: 'string', description: 'Contents for write/append.' },
     },
     output: looseOutput((_args, value) => text(value.text ?? 'ok')),
-    async execute(args) {
+    async execute(args, exec) {
+      const scratchPath = scratchFor(exec)
       const action = String(args.action ?? '')
       if (action === 'path') return { text: scratchPath }
       if (action === 'read') {
         const body = existsSync(scratchPath)
-          ? (await import('node:fs/promises')).readFile(scratchPath, 'utf8')
+          ? readFile(scratchPath, 'utf8')
           : '(empty)'
         return { text: await body }
       }
       if (action === 'clear') {
-        if (existsSync(scratchPath)) (await import('node:fs/promises')).unlink(scratchPath)
+        if (existsSync(scratchPath)) unlink(scratchPath)
         return { text: '(cleared)' }
       }
       if (action === 'write') {
-        (await import('node:fs/promises')).writeFile(scratchPath, String(args.text ?? ''), 'utf8')
+        writeFile(scratchPath, String(args.text ?? ''), 'utf8')
         return { text: `(wrote ${String(args.text ?? '').length} chars)` }
       }
       if (action === 'append') {
-        const fs = await import('node:fs/promises')
         const previous = existsSync(scratchPath) ? await fs.readFile(scratchPath, 'utf8') : ''
         const next = (previous ? previous + '\n' : '') + String(args.text ?? '')
-        fs.writeFile(scratchPath, next, 'utf8')
+        writeFile(scratchPath, next, 'utf8')
         return { text: `(appended ${String(args.text ?? '').length} chars)` }
       }
       throw new Error(`unknown scratchpad action: ${action}`)

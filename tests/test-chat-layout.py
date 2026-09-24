@@ -41,11 +41,16 @@ def main():
     reply = chat.style_for({"kind": chat.PARAGRAPH, "who": "cowork"})
     head = chat.style_for({"kind": chat.HEADING, "who": "cowork"})
     code = chat.style_for({"kind": chat.CODE, "who": "cowork"})
-    check("the user's bubble is indented; the assistant's is not",
-          user["x"] > reply["x"], (user["x"], reply["x"]))
-    check("only the user gets the bubble background",
-          user["bg"] == chat.USER_BG and reply["bg"] == chat.PLAIN_BG
-          and head["bg"] == chat.PLAIN_BG, (user["bg"], reply["bg"]))
+    check("the user's bubble starts further right than the model's",
+          user["x_frac"] > reply["x_frac"], (user["x_frac"], reply["x_frac"]))
+    check("bubbles mirror: user 20/5, model 5/20",
+          user["x_frac"] == 0.20 and user["right_frac"] == 0.05
+          and reply["x_frac"] == 0.05 and reply["right_frac"] == 0.20,
+          (user["x_frac"], user["right_frac"], reply["x_frac"], reply["right_frac"]))
+    check("both sides get a bubble, and they differ",
+          user["bg"] == chat.USER_BG and head["bg"] == chat.MODEL_BG
+          and chat.USER_BG != chat.MODEL_BG != chat.PANEL_BG,
+          (hex(user["bg"]), hex(head["bg"]), hex(chat.PANEL_BG)))
     check("headings are bold and larger", head["weight"] > 100
           and head["size_delta"] > 0)
     check("code is monospace on the code background",

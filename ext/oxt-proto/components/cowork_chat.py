@@ -22,7 +22,12 @@ CENTER_MUTED = "center_muted"
 # -- geometry constants (panel units) --------------------------------------- #
 
 MARGIN = 6           # outer margin; the transcript container sits at this
-USER_INSET = 14      # left inset of the user bubble, suggesting the side
+# Bubble geometry as FRACTIONS of the pane width, mirroring WhatsApp: each
+# side's messages hug that side with a modest opposite gap.
+USER_X_FRAC = 0.20        # the user's bubble starts 20% from the left
+USER_RIGHT_FRAC = 0.05    # and ends 5% from the right
+MODEL_X_FRAC = 0.05       # the model's content starts 5% from the left
+MODEL_RIGHT_FRAC = 0.20   # and ends 20% from the right
 BLOCK_PAD = 2        # vertical padding added below observed content height
 BUBBLE_PAD = 6       # extra below-content padding inside a user bubble
 GAP_BLOCK = 8        # between paragraphs of the same speaker
@@ -45,12 +50,13 @@ WHEEL_LINES = 3
 PANEL_BG = 0x1B1C1F        # the transcript surface, clearly darker than any theme
 USER_BG = 0x543F33         # the user's bubble: the accent hue, unmistakable
 USER_TEXT = 0xFFFFFF
-CODE_BG = 0x232529
+MODEL_BG = 0x2B2E34        # the model's bubble: plainly lighter than the pane
+CODE_BG = 0x1F2126
 CODE_TEXT = 0xDDDDDD
 TEXT = 0xE6E7E9            # assistant body text
 MUTED = 0x909090
 RULE_BG = 0x3A3D44
-PLAIN_BG = PANEL_BG
+PLAIN_BG = MODEL_BG = 0x2B2E34
 TEXT_PLAIN = TEXT
 
 # Dash binding: agents write -- and - separators heavily; LibreOffice breaks
@@ -74,48 +80,53 @@ def bind_dashes(text):
 def style_for(block):
     """Position, colour and font decisions for one block — pure.
 
-    Returns dict with x, width_in (inset from both sides of the container),
-    bg, fg, mono, size_delta, weight, align, and whether content height is
-    observed (rules are fixed-height).
+    Returns dict with x_frac/right_frac (mirrored bubble geometry as a
+    fraction of the pane width), bg, fg, mono, size_delta, weight, align, and
+    whether content height is observed (rules are fixed-height).
     """
     kind = block.get("kind", PARAGRAPH)
     who = block.get("who")
     base = {"mono": False, "size_delta": 0, "weight": 100.0, "align": 0,
-            "fg": TEXT, "bg": PANEL_BG, "observed": True}
+            "fg": TEXT, "bg": MODEL_BG, "observed": True}
     if kind == HEADING:
         base.update(weight=150.0, size_delta=3, gap_before=GAP_HEADING_BEFORE,
                     gap_after=GAP_HEADING_AFTER)
-        x, wi = 0, EDGE
     elif kind == BULLET:
         base.update(prefix="\u2022 ")
-        x, wi = 8, EDGE + 4
+
     elif kind == CODE:
         base.update(mono=True, bg=CODE_BG, fg=CODE_TEXT,
                     gap_before=GAP_CODE, gap_after=GAP_CODE)
-        x, wi = 8, EDGE + 4
+
     elif kind == RULE:
         base.update(bg=RULE_BG, observed=False, fixed_h=RULE_HEIGHT)
-        x, wi = 8, EDGE + 8
+
     elif kind in (CENTER, CENTER_MUTED):
-        base.update(align=1)
+        base.update(align=1, bg=PANEL_BG)
         if kind == CENTER_MUTED:
             base["fg"] = MUTED
-        x, wi = 0, EDGE
     elif who == "you":
         base.update(bg=USER_BG, fg=USER_TEXT, gap_before=GAP_MSG,
                     gap_after=GAP_MSG, pad_b=BUBBLE_PAD)
-        x, wi = USER_INSET, EDGE + 4
     else:
         base.update(gap_before=GAP_BLOCK, gap_after=GAP_BLOCK)
-        x, wi = 0, EDGE
     base.setdefault("prefix", "")
     base.setdefault("gap_before", GAP_BLOCK)
     base.setdefault("gap_after", GAP_BLOCK)
     base.setdefault("pad_b", BLOCK_PAD)
+    # Bubbles are mirrored fractions of the pane width (user 20%/5%, model
+    # 5%/20%) — the user's spec, and what actually reads as a conversation.
     base["kind"] = kind
     base["who"] = who
-    base["x"] = x
-    base["width_in"] = wi
+    if kind in (CENTER, CENTER_MUTED):
+        base["x_frac"] = 0.02
+        base["right_frac"] = 0.02
+    elif who == "you":
+        base["x_frac"] = USER_X_FRAC
+        base["right_frac"] = USER_RIGHT_FRAC
+    else:
+        base["x_frac"] = MODEL_X_FRAC
+        base["right_frac"] = MODEL_RIGHT_FRAC
     return base
 
 
