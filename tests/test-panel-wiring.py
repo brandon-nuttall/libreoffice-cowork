@@ -68,6 +68,10 @@ def install_uno_stubs():
     module("com.sun.star.awt.KeyModifier", SHIFT=1, MOD1=2)
     module("com.sun.star.awt.PosSize", POSSIZE=12)
     module("com.sun.star.beans", PropertyAttribute=type("PropertyAttribute", (), {}))
+    # The clipboard transferable is declared with this interface; the stub is a
+    # plain class because the tests never instantiate UNO's real one.
+    module("com.sun.star.datatransfer",
+           XTransferable=type("XTransferable", (), {}))
     module("com.sun.star.ui",
            XUIElementFactory=type("XUIElementFactory", (), {}),
            XUIElement=type("XUIElement", (), {}),

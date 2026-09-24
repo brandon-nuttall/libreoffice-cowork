@@ -13,6 +13,7 @@
   <!-- Markdown parsing for the transcript. No UNO imports, so its formatting can
        be tested without a GUI. -->
   <manifest:file-entry manifest:full-path="components/cowork_markdown.py" manifest:media-type="text/x-python"/>
+  <manifest:file-entry manifest:full-path="components/cowork_chat.py" manifest:media-type="text/x-python"/>
   <!-- Transcript geometry. Imports no UNO, so tests/test-layout.py covers it
        directly instead of every layout mistake costing a rebuild and a capture. -->
   <manifest:file-entry manifest:full-path="components/cowork_layout.py" manifest:media-type="text/x-python"/>

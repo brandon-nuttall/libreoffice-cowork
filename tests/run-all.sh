@@ -28,6 +28,7 @@ run() {
 
 run "component statics"  python3 tests/test-component-statics.py
 run "layout geometry"    python3 tests/test-layout.py
+run "chat layout core"   python3 tests/test-chat-layout.py
 run "block model"        python3 tests/test-markdown.py
 run "panel wiring"       python3 tests/test-panel-wiring.py
 # Needs a live runtime; says so and exits 0 when there is none, so it does not

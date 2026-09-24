@@ -1848,3 +1848,35 @@ runs, the busy flag and the label both revert correctly.
 * the undo stack is clean: no document edits, no undo entries
 * both acceptance tests pass: `Chat and turn-taking work.` and `Live editing works,
   and a turn is one undo step.`
+
+---
+
+# F56 — Phase 1 of the chat UI, built on probes instead of guesses
+
+`docs/CHAT_UI_DESIGN.md` was written first, and two toolkit probes ran before a
+line of renderer code, because the previous bubble attempt died on unverified
+assumptions. The probes changed the design rather than confirming it:
+
+  * `MultiLine UnoControlFixedText` wraps natively (6 lines observed) — hand
+    wrapping is gone entirely.
+  * Accessible `getCharacterBounds` reads rendered line geometry — heights are
+    observed from the render, never predicted. On this backend possize units
+    track device pixels at the sidebar (~72 dpi), so a 10pt line is ~11–36
+    units depending on window scale — the number's meaning varies by context,
+    which is precisely why it is measured live per session (the panel
+    calibrated pitch=36 on first run) instead of hard-coded.
+
+Shipping checks caught two more before they could reach the user:
+
+  * `Label` does NOT honour literal newlines — the first calibration measured
+    the line-feed glyph's box and got a negative pitch. Calibration now forces
+    a real wrap at a narrow width.
+  * `_TextTransferable` inherited only `unohelper.Base`; `setContents` refuses
+    anything not implementing `XTransferable` ("value does not implement...").
+    Reproduced against the live clipboard service, then fixed — the Copy
+    button would otherwise have been dead on arrival.
+
+Verification: unit suite green incl. new `test-chat-layout.py`; sandbox run
+with a live turn shows zero tracebacks, live calibration, and 27,169 pixels of
+exact user-bubble colour in the expected band; the office clipboard service
+round-trips the exact DataFlavor shape the panel emits.

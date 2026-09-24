@@ -43,6 +43,7 @@ import unohelper
 from com.sun.star.awt import (XActionListener, XCallback, XKeyListener,
                               XAdjustmentListener, XWindowListener, XTextListener)
 from com.sun.star.beans import PropertyAttribute
+from com.sun.star.datatransfer import XTransferable
 from com.sun.star.awt.Key import RETURN as KEY_RETURN
 from com.sun.star.awt.KeyModifier import SHIFT as MOD_SHIFT
 from com.sun.star.awt.PosSize import POSSIZE
@@ -54,11 +55,13 @@ from com.sun.star.ui.UIElementType import TOOLPANEL
 # be tested against a live service without a GUI.
 try:
     import cowork_layout as layout
+    import cowork_chat as chat
 except ImportError:
     import os as _os
     import sys as _sys
     _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
     import cowork_layout as layout
+    import cowork_chat as chat
 
 try:
     import cowork_markdown as markdown
@@ -143,6 +146,12 @@ _SANS_FONT = "Noto Sans"
 # is noise; on a thirty-second one it is the difference between "working" and
 # "hung". Matches the harness's own progress chrome.
 _CLOCK_AFTER_MS = 15000
+
+# Calibration fallbacks, in the same units the panel actually uses: the probes
+# measured a 10pt line pitch of ~11 units and a ~5-unit top inset on this
+# backend, where possize units track device pixels (see _calibrations).
+_FALLBACK_PITCH = 13.0
+_FALLBACK_TOP = 4.0
 _BUTTON_HEIGHT = 26
 # The width the panel needs to be legible, not the width it can survive. This is
 # reported through XSidebarPanel.getMinimalWidth(), and the sidebar uses it to
@@ -403,6 +412,34 @@ class _MainThreadPump(unohelper.Base, XCallback):
         element._pump_once()
 
 
+class _TextTransferable(unohelper.Base, XTransferable):
+    """Carries plain text to the system clipboard.
+
+    MUST implement XTransferable: setContents refuses anything that does not,
+    with "value does not implement com.sun.star.datatransfer.XTransferable".
+    The first version inherited only unohelper.Base and was caught by probing
+    the clipboard service before shipping -- or the button would have done
+    nothing at all.
+    """
+
+    def __init__(self, text):
+        self._text = text
+
+    def getTransferData(self, flavor):
+        if str(flavor.MimeType).startswith("text/plain"):
+            return self._text
+        raise uno.IllegalArgumentException("unsupported flavor", None)
+
+    def getTransferDataFlavors(self):
+        flavor = uno.createUnoStruct("com.sun.star.datatransfer.DataFlavor")
+        flavor.MimeType = "text/plain;charset=utf-8"
+        flavor.HumanPresentableName = "Plain text"
+        return (flavor,)
+
+    def isDataFlavorSupported(self, flavor):
+        return str(flavor.MimeType).startswith("text/plain")
+
+
 class _ScrollListener(unohelper.Base, XAdjustmentListener):
     """Re-lays-out the transcript when the scrollbar moves.
 
@@ -420,8 +457,7 @@ class _ScrollListener(unohelper.Base, XAdjustmentListener):
         if element is None:
             return
         try:
-            element._scroll_offset = int(event.Value)
-            element._render()
+            element._on_scroll(int(event.Value))
         except Exception:
             _log(traceback.format_exc())
 
@@ -525,6 +561,20 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         self._turn_started = 0.0
 
         self._autosend_pending = False
+        # Transcript state: the control pool, the observed line metrics and the
+        # cached stack so a user scroll never re-measures (docs/CHAT_UI_DESIGN.md).
+        # Initialised in __init__ so the first render cannot touch an attribute
+        # that does not exist yet — the _transcript_bubbles crash of F51.
+        self._pnl = None
+        self._transcript_width = 0
+        self._transcript_view = 0
+        self._transcript_pool = []
+        self._line_pitch = 0.0
+        self._line_top = 0.0
+        self._autoscroll = True
+        self._plan = None
+        self._stack = []
+        self._scroll_offset = 0
         self._closing = False
         self._streaming = False
         self._worker = None
@@ -590,26 +640,27 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         # no rich-text control available (UnoControlRichText returns None from
         # this context, like com.sun.star.awt.Timer). Per-control formatting is
         # what the toolkit does support, so each block becomes its own label.
-        # The conversation is ONE text control.
-        #
-        # This replaced a stack of individually-positioned labels that could carry
-        # per-run styling and chat bubbles. That approach cannot work here: the
-        # sidebar hands the panel 232 units (2.32 cm, about 88 px, roughly fourteen
-        # characters per line at 10pt), so a bubble's padding leaves six. Bubbles
-        # are a fine idea that does not fit — which is why Claude for Word uses a
-        # single plain text pane rather than bubbles.
-        #
-        # A text control also does, natively, the two things the label stack kept
-        # getting wrong: it wraps at any width, and it scrolls.
-        self._control(container, "txtTranscript", "UnoControlEdit",
-                      "UnoControlEditModel",
-                      MultiLine=True,
-                      ReadOnly=True,
-                      VScroll=True,
-                      AutoVScroll=True,
-                      Border=True,
-                      HideInactiveSelection=False,
-                      Tabstop=True)
+        # The conversation is a scrolling container of one MultiLine label per
+        # message block (docs/CHAT_UI_DESIGN.md). The toolkit wraps each label
+        # natively (probed: 6 rendered lines for a long label at width 220) and
+        # reports its rendered line geometry through the accessible interface, so
+        # heights are OBSERVED from the render rather than predicted from a
+        # character-width model — the mistake that sank the previous bubble
+        # design. FixedText is not text-selectable, which the Copy button
+        # compensates for.
+        self._control(container, "pnlTranscript", "UnoControlContainer",
+                      "UnoControlContainerModel")
+        self._pnl = self._control_by_name("pnlTranscript")
+        if self._pnl is not None:
+            peer = self._pnl
+            # Children must be created against the parent's peer.
+            self._transcript_peer_holder = peer
+
+        self._control(container, "scrTranscript", "UnoControlScrollBar",
+                      "UnoControlScrollBarModel",
+                      Orientation=1,      # VERTICAL
+                      ScrollValue=0, ScrollValueMax=0, BlockIncrement=40,
+                      LineIncrement=11)
 
         self._control(container, "lblStatus", "UnoControlFixedText",
                       "UnoControlFixedTextModel",
@@ -638,7 +689,8 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                      "send:\n%s" % traceback.format_exc())
 
         listener = _PanelListener(self)
-        for name, label in (("btnSend", "Send"), ("btnClear", "Clear")):
+        for name, label in (("btnSend", "Send"), ("btnClear", "Clear"),
+                            ("btnCopy", "Copy")):
             button = self._control(container, name, "UnoControlButton",
                                    "UnoControlButtonModel",
                                    Label=label, PushButtonType=0)
@@ -732,13 +784,20 @@ class CoworkUIElement(unohelper.Base, XUIElement):
 
             self._transcript_width = inner
             self._transcript_view = transcript_h
-            self._place("txtTranscript", _MARGIN, transcript_y, inner, transcript_h)
+            inner_w = max(inner - chat.BAR_W - chat.BAR_GAP, 60)
+            self._place("pnlTranscript", _MARGIN, transcript_y, inner_w,
+                        transcript_h)
+            self._place("scrTranscript", _MARGIN + inner_w + chat.BAR_GAP,
+                        transcript_y, chat.BAR_W, transcript_h)
             self._place("lblStatus", _MARGIN, status_y, inner, _STATUS_HEIGHT)
             self._place("txtComposer", _MARGIN, composer_y, inner, _COMPOSER_HEIGHT)
-            half = max((inner - _GAP) // 2, 30)
-            self._place("btnSend", _MARGIN, buttons_y, half, _BUTTON_HEIGHT)
-            self._place("btnClear", _MARGIN + half + _GAP, buttons_y,
-                        inner - half - _GAP, _BUTTON_HEIGHT)
+            third = max((inner - 2 * _GAP) // 3, 24)
+            self._place("btnSend", _MARGIN, buttons_y, third, _BUTTON_HEIGHT)
+            self._place("btnClear", _MARGIN + third + _GAP, buttons_y,
+                        third, _BUTTON_HEIGHT)
+            self._place("btnCopy", _MARGIN + 2 * (third + _GAP), buttons_y,
+                        inner - 2 * (third + _GAP), _BUTTON_HEIGHT)
+            self._relayout_transcript()
             _log("%slayout: parent=%dx%d container=%dx%d inner=%d transcript_h=%d"
                  % ("re" if resized else "", psize.Width, psize.Height,
                     width, height, inner, transcript_h))
@@ -867,6 +926,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         except Exception:
             _log(traceback.format_exc())
 
+        self._autoscroll = True
         self._append("You", text)
         self._set_busy(True)
         try:
@@ -886,6 +946,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             piece = item[1]
             if not piece:
                 return
+            self._autoscroll = True
             if not self._streaming:
                 self._streaming = True
                 self._drop_status()
@@ -896,6 +957,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             self._streaming = False
             self._set_status(item[1] or "Working…")
         elif kind == "final":
+            self._autoscroll = True
             was_streaming = self._streaming
             self._streaming = False
             self._set_busy(False)
@@ -914,6 +976,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                 entries.append({"kind": "cowork", "text": item[1]})
             self._render()
         elif kind == "error":
+            self._autoscroll = True
             was_streaming = self._streaming
             self._streaming = False
             self._set_busy(False)
@@ -1041,58 +1104,271 @@ class CoworkUIElement(unohelper.Base, XUIElement):
 
     # -- rendering ------------------------------------------------------ //
 
-    def _render_empty_state(self, control, inner, view):
-        """The opening view, as text in the same control.
+    # -- transcript rendering (chat bubbles; see docs/CHAT_UI_DESIGN.md) --- //
 
-        Centred prose rather than positioned labels: the panel is 2.3cm wide, so a
-        centred label is clipped on the left anyway, and a text control wraps.
-        """
-        # No hard line breaks mid-sentence: the control wraps visually, and every
-        # inserted newline ends up in the clipboard when the user copies it.
-        lines = [
-            "How can I help with this document?",
-            _doc_name(self.frame),
-            "",
+    def _blocks_for_display(self):
+        if self._entries():
+            return self._blocks()
+        # The empty state rides the same pipeline as a conversation: one block
+        # per line, centred. Two code paths for one visual would double the
+        # places a layout bug can live.
+        doc = _doc_name(self.frame)
+        blocks = [
+            {"kind": chat.CENTER, "who": "cowork",
+             "runs": [{"text": "How can I help with this document?",
+                       "bold": True, "italic": False, "mono": False}]},
+            {"kind": chat.CENTER_MUTED, "who": "cowork",
+             "runs": [{"text": doc, "bold": False, "italic": False,
+                       "mono": False}]},
         ]
-        lines += list(self._SUGGESTIONS)
-        try:
-            control.setText("\n".join(lines))
-            control.setSelection(uno.createUnoStruct(
-                "com.sun.star.awt.Selection", 0, 0))
-        except Exception:
-            _log(traceback.format_exc())
+        for suggestion in self._SUGGESTIONS:
+            blocks.append({"kind": chat.CENTER, "who": "cowork",
+                           "runs": [{"text": suggestion, "bold": False,
+                                     "italic": False, "mono": False}]})
+        return blocks
 
-    def _render_messages(self, control, inner, view):
-        """Write the conversation into the transcript as plain text.
+    def _pool_slot(self, index):
+        """One label control per slot, created on demand and reused."""
+        pool = self._transcript_pool
+        while len(pool) <= index:
+            ctl = self._new("UnoControlFixedText")
+            model = self._new("UnoControlFixedTextModel")
+            model.MultiLine = True
+            ctl.setModel(model)
+            try:
+                self._pnl.addControl("blk%d" % len(pool), ctl)
+            except Exception:
+                _log("addControl failed:\n%s" % traceback.format_exc())
+            pool.append(ctl)
+        return pool[index]
 
-        Geometry, wrapping and scrolling are the control's business here, which is
-        the point: the label-stack renderer had to compute every line's position,
-        width and height by hand and got it wrong repeatedly in ways only a
-        screenshot revealed.
+    def _calibrations(self):
+        """Line pitch + top inset, measured from a two-line label.
+
+        The label trick is: two words at a width that fits neither, so the
+        toolkit MUST wrap to two lines. (A literal newline in `Label` is NOT a
+        line break on this backend — the first calibration attempt measured the
+        line-feed glyph's box instead and produced a negative pitch.)
+
+        Units note, from the probes: on this backend one possize unit tracks a
+        device pixel (~72 dpi), so a 10pt line is about 11-13 units, NOT the
+        550-ish units the 1/100 mm interpretation of the same numbers suggests.
+        Measure-by-render sidesteps the question; the fallback below is simply
+        the probe's observation, and a failed calibration is retried each render
+        rather than cached.
         """
-        columns = max(int((inner - 20) / layout.CHAR_WIDTH), 8)
-        body = layout.to_plain_text(self._blocks(), columns)
+        if self._line_pitch:
+            return self._line_pitch, self._line_top
+        if not self._pnl:
+            return _FALLBACK_PITCH, _FALLBACK_TOP
         try:
-            control.setText(body)
-            # A zero-width selection at the end is a caret; Selection(0, n) selects
-            # everything and paints the whole conversation in the selection colour.
-            control.setSelection(uno.createUnoStruct(
-                "com.sun.star.awt.Selection", len(body), len(body)))
+            ctl = self._pool_slot(len(self._transcript_pool))
+            model = ctl.getModel()
+            model.FontName = _SANS_FONT
+            model.FontHeight = 10
+            acc = ctl.getAccessibleContext()
+            for width in (16, 20, 26):
+                model.Label = "pp pp pp"
+                ctl.setPosSize(0, -4000, width, 200, POSSIZE)
+                n = acc.getCharacterCount()
+                if n < 3:
+                    continue
+                a = acc.getCharacterBounds(0)
+                b = acc.getCharacterBounds(n - 1)
+                pitch = float(b.Y - a.Y)
+                if pitch > 4 and pitch < 60 and b.Y > a.Y:
+                    self._line_pitch = pitch
+                    self._line_top = float(a.Y)
+                    model.Label = ""
+                    ctl.setPosSize(0, -4000, 1, 1, POSSIZE)
+                    _log("calibrated: pitch=%.1f top=%.1f (width=%d)"
+                         % (pitch, self._line_top, width))
+                    return self._line_pitch, self._line_top
+            raise ValueError("no plausible pitch at any probe width")
         except Exception:
-            _log(traceback.format_exc())
+            _log("calibration retrying later (fallback this render):\n%s"
+                 % traceback.format_exc())
+        return _FALLBACK_PITCH, _FALLBACK_TOP
+
+    def _relayout_transcript(self):
+        """Full measure + place after the panel size changed.
+
+        Wrapping depends on width, so a resize invalidates the cached stack —
+        this is the only path back through the measure passes.
+        """
+        self._stack = []
+        self._plan = None
+        self._render()
 
     def _render(self):
-        """Draw either the empty state or the conversation, into one text control."""
-        control = self._control_by_name("txtTranscript")
-        if control is None:
+        """Redraw the transcript: one MultiLine label per message block."""
+        if self._pnl is None:
+            self._pnl = self._control_by_name("pnlTranscript")
+            if self._pnl is None:
+                return
+        try:
+            panel = self._pnl.getPosSize()
+            if not panel.Width:          # layout() has not placed us yet
+                return
+            width = panel.Width or self._transcript_width or _FALLBACK_WIDTH
+            view = panel.Height or self._transcript_view or 400
+            blocks = self._blocks_for_display()
+            pitch, top = self._calibrations()
+
+            plan_rows = []
+            rendered = []
+            prev = None
+            y = 0
+            for index, block in enumerate(blocks):
+                st = chat.style_for(block)
+                text = "".join(r.get("text", "")
+                               for r in block.get("runs", [])).strip()
+                if block.get("kind") == chat.RULE:
+                    text = ""
+                gap = chat.gap_between(prev, block) if prev is not None else 0
+                ctl = self._pool_slot(index)
+                try:
+                    model = ctl.getModel()
+                    model.Label = st.get("prefix", "") + text
+                    model.MultiLine = True
+                    model.FontName = _MONO_FONT if st["mono"] else _SANS_FONT
+                    model.FontHeight = 10 + st["size_delta"]
+                    model.FontWeight = st["weight"]
+                    model.Align = st["align"]
+                    model.TextColor = st["fg"]
+                    model.BackgroundColor = st["bg"]
+                except Exception:
+                    _log("configure failed:\n%s" % traceback.format_exc())
+
+                w = max(width - st["width_in"] - 2, 20)
+                x = st["x"]
+                if st["observed"]:
+                    # Pass 1: generous height, final width and position, so the
+                    # toolkit wraps at the real width.
+                    ctl.setPosSize(x, y + gap, w, 800, POSSIZE)
+                    h = None
+                    try:
+                        acc = ctl.getAccessibleContext()
+                        n = acc.getCharacterCount()
+                        if n:
+                            last = acc.getCharacterBounds(n - 1)
+                            lines = round((last.Y - top) / pitch) + 1
+                            h = int(top + lines * pitch + st["pad_b"])
+                    except Exception:
+                        _log("measure failed:\n%s" % traceback.format_exc())
+                    if h is None or h <= 0:
+                        # Fallback: estimate from wrapped-line count at the
+                        # observed pitch, assuming ~1 line per 12 chars.
+                        h = int(top + (len(text) // 12 + 1) * pitch
+                                + st["pad_b"])
+                else:
+                    h = st["fixed_h"]
+
+                plan_rows.append({"key": "b%d" % index, "x": x,
+                                  "width_in": st["width_in"], "h": h,
+                                  "gap": gap})
+                ctl.setPosSize(x, y + gap, w, h, POSSIZE)
+                rendered.append(ctl)
+                y += gap + h
+                prev = block
+
+            total = y
+            offset = None
+            if self._autoscroll:
+                offset = None           # plan() pins to the newest
+            self._plan = chat.plan(plan_rows, view, offset)
+            self._stack = plan_rows
+            used = self._plan["used_offset"]
+            for index, row in enumerate(self._plan["rows"]):
+                ctl = rendered[index]
+                if index >= len(rendered):
+                    break
+                if row["visible"]:
+                    ctl.setPosSize(row["x"], row["y"] - used,
+                                   max(width - row["width_in"] - 2, 20),
+                                   row["h"], POSSIZE)
+                    ctl.setVisible(True)
+                else:
+                    ctl.setVisible(False)
+            # Hide pool entries this render did not use.
+            for stale in self._transcript_pool[len(rendered):]:
+                try:
+                    stale.setVisible(False)
+                except Exception:
+                    pass
+
+            bar = self._control_by_name("scrTranscript")
+            if bar is not None:
+                try:
+                    bar.setValues(used, min(view, max(total, 1)),
+                                  max(total, 1))
+                except Exception:
+                    try:
+                        model = bar.getModel()
+                        model.ScrollValueMax = max(self._plan["max_offset"], 0)
+                        model.ScrollValue = used
+                    except Exception:
+                        _log("scrollbar set failed:\n%s"
+                             % traceback.format_exc())
+        except Exception:
+            _log("render failed:\n%s" % traceback.format_exc())
+
+    def _on_scroll(self, value):
+        """Reposition cached rows for a user scroll: arithmetic only.
+
+        Measured heights are cached in `self._stack`, so a scroll tick costs a
+        plan + a sweep of setPosSize calls, never a re-measure. Dragging also
+        cancels autoscroll: the person is in charge until the next turn starts.
+        """
+        self._autoscroll = False
+        self._scroll_offset = value
+        if not self._stack:
+            self._render()
             return
-        live = control.getPosSize()
-        width = live.Width or self._transcript_width or _FALLBACK_WIDTH
-        inner = max(width - 2 * _MARGIN, 60)
-        if not self._entries():
-            self._render_empty_state(control, inner, live.Height)
-        else:
-            self._render_messages(control, inner, live.Height)
+        try:
+            panel = self._pnl.getPosSize()
+            width = panel.Width or self._transcript_width or _FALLBACK_WIDTH
+            view = panel.Height or self._transcript_view or 400
+            refreshed = chat.plan(self._stack, view, value)
+            pool = self._transcript_pool
+            for index, row in enumerate(refreshed["rows"]):
+                if index >= len(pool):
+                    break
+                ctl = pool[index]
+                if row["visible"]:
+                    ctl.setPosSize(row["x"], row["y"] - refreshed["used_offset"],
+                                   max(width - row["width_in"] - 2, 20),
+                                   row["h"], POSSIZE)
+                    ctl.setVisible(True)
+                else:
+                    ctl.setVisible(False)
+            bar = self._control_by_name("scrTranscript")
+            if bar is not None:
+                try:
+                    bar.setValues(refreshed["used_offset"],
+                                  min(view, refreshed["total"]),
+                                  max(refreshed["total"], 1))
+                except Exception:
+                    pass
+        except Exception:
+            _log("scroll apply failed:\n%s" % traceback.format_exc())
+
+    def _copy_transcript(self):
+        """Put the whole conversation on the clipboard as clean text."""
+        try:
+            blocks = self._blocks()
+            text = layout.to_plain_text(blocks, 200)
+            if not text.strip():
+                return
+            clip = self.ctx.ServiceManager.createInstanceWithContext(
+                "com.sun.star.datatransfer.clipboard.SystemClipboard", self.ctx)
+            transferable = _TextTransferable(text)
+            clip.setContents(transferable, None)
+            # Deliberately NOT dropped: the note stays until the next turn
+            # starts, so the user actually sees the confirmation.
+            self._set_status("Copied.")
+        except Exception:
+            _log("copy failed:\n%s" % traceback.format_exc())
 
     def _describe_tool(name):
         """Turn a tool name into something a person understands.
@@ -1144,6 +1420,12 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                 pass
         self._root = None
         self._panel = None
+        self._pnl = None
+        self._transcript_width = 0
+        self._transcript_view = 0
+        self._transcript_pool = []
+        self._plan = None
+        self._stack = []
         self._controls = {}
         self._listeners = []
 
