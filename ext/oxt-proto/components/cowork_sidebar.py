@@ -1410,7 +1410,6 @@ class CoworkUIElement(unohelper.Base, XUIElement):
             self._used_offset = used
             fi = 0                      # block-filler cursor for this pass
             previous = None
-            R = 3                       # rounded-corner cut, in units
             OUTER = chat.PANEL_BG
             for index, row in enumerate(self._plan["rows"]):
                 ctl = rendered[index]
@@ -1418,8 +1417,8 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                     break
                 if row["visible"]:
                     who = row.get("who")
-                    if previous is None or previous.get("who") != who:
-                        run_top = row["y"] - used - chat.PAD_V
+                    run_start = previous is None or previous.get("who") != who
+                    run_top = (row["y"] - used - chat.PAD_V) if run_start else None
                     y = row["y"] - used
                     bubble_colour = (chat.USER_BG if who == "you"
                                      else chat.MODEL_BG)
@@ -1445,41 +1444,44 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                                max(full_w - chat.PAD_H - text_w, 4), row["h"],
                                bubble_colour)
                     fi += 1
-                    # top / bottom strips
-                    self._rect(fi, px, y - chat.PAD_V, full_w, chat.PAD_V,
-                               bubble_colour)
-                    fi += 1
-                    self._rect(fi, px, y + row["h"], full_w,
-                               chat.PAD_V_BOTTOM, bubble_colour)
-                    fi += 1
-
-                    # ROUNDED OUTER CORNERS: pane-coloured covers on the very
-                    # outside of each turn -- the run's first row gets two at
-                    # the top, and the run's last row two at the bottom. The
-                    # outer silhouette is cut by R on each corner while the
-                    # inside stays rectangular.
-                    if previous is None or previous.get("who") != who:
-                        top_y = y - chat.PAD_V
-                        self._rect(fi, px, top_y, R, 1, OUTER); fi += 1
-                        self._rect(fi, px, top_y, 1, R, OUTER); fi += 1
-                        self._rect(fi, bx_right - R, top_y, R, 1, OUTER); fi += 1
-                        self._rect(fi, bx_right - 1, top_y, 1, R, OUTER); fi += 1
+                    # TOP strip only at a RUN START (first block of a turn);
+                    # inside a turn the seam filler paints the whole band --
+                    # strips here would overlap the previous label's bottom
+                    # and paint over its text.
+                    if run_top is not None:
+                        self._rect(fi, px, run_top, full_w, chat.PAD_V,
+                                   bubble_colour)
+                        fi += 1
+                        # ROUNDED OUTER CORNERS on the run's top edge: the
+                        # cover strips are pane-coloured, sized R so they are
+                        # visible; added after the fillers, so they sit on top.
+                        if previous is None or previous.get("who") != who:
+                            Rt = 9
+                            self._rect(fi, px, run_top, full_w, 1, OUTER); fi += 1
+                            self._rect(fi, px, run_top + 1, 1, Rt, OUTER); fi += 1
+                            self._rect(fi, px + full_w - 1, run_top + 1, 1, Rt,
+                                       OUTER)
+                            fi += 1
+                    # The run ends here when the next row is a different
+                    # speaker (or nothing): draw the bottom band + rounded
+                    # bottom corners with VISIBLE rounding.
+                    nxt = (self._plan["rows"][index + 1]
+                           if index + 1 < len(self._plan["rows"]) else None)
+                    if nxt is None or nxt.get("who") != who:
+                        self._rect(fi, px, y + row["h"], full_w,
+                                   chat.PAD_V_BOTTOM, bubble_colour)
+                        fi += 1
+                        bot_y = y + row["h"] + chat.PAD_V_BOTTOM
+                        Rb = 9
+                        self._rect(fi, px, bot_y - 1, full_w, 1, OUTER); fi += 1
+                        self._rect(fi, px, bot_y - Rb, 1, Rb, OUTER); fi += 1
+                        self._rect(fi, bx_right - 1, bot_y - Rb, 1, Rb, OUTER); fi += 1
                     previous = row
                 else:
-                    if previous is not None:
-                        # close the turn at the previous visible row: bottom
-                        # corner covers (the pane gets the last word at the
-                        # outer corners)
-                        pw = max(int(width * (1 - previous.get("right", 0))
-                                     - previous["x"]) - 2, 20)
-                        px_o = previous["x"]
-                        bot_y = (previous["y"] - used + previous["h"]
-                                 + chat.PAD_V_BOTTOM)
-                        self._rect(fi, px_o, bot_y - 1, R, 1, OUTER); fi += 1
-                        self._rect(fi, px_o, bot_y - R, 1, R, OUTER); fi += 1
-                        self._rect(fi, px_o + pw - R, bot_y - 1, R, 1, OUTER); fi += 1
-                        self._rect(fi, px_o + pw - 1, bot_y - R, 1, R, OUTER); fi += 1
-                    previous = None
+                    # An off-viewport row is still INSIDE its turn (it is
+                    # hidden only because the viewport cut it): keep the run
+                    # alive. A real turn break always arrives as a visible
+                    # row with a different speaker.
                     ctl.setVisible(False)
             # a run that reaches the pane's end still gets bottom covers
             if previous is not None:
