@@ -2020,3 +2020,25 @@ struggling, and a macro-security dialog. The sidebar log held the answers:
 
 Best practice distilled into the persona (rule 5): act on the OPEN document
 through the tools; if a tool fails, say so rather than spawning processes.
+
+---
+
+# F61 — The agent improvising a scratchpad was the missing affordance
+
+User observation: the agent tried to CREATE AND OPEN another document as a
+scratchpad. Nothing in the tool surface offered a place to draft or hold
+intermediate state, so it improvised the only canvas it could see: another
+LibreOffice window. Same root cause as the earlier window-spawning -- an
+unmet need expressed as window clutter.
+
+The first-class answer is the new `scratchpad` tool (cowork-office.mjs):
+actions write/append/read/clear/path, backed by ONE plain file in this repo's
+checkout root by default (overridable with COWORK_SCRATCHPAD for tests). No
+LibreOffice in the loop, no UI, no undo impact on the user's document, and
+nothing for a security dialog to react to. Scoped to the runtime process,
+like the turn registry.
+
+Persona rule 5 now names the affordance and the prohibition together: use
+scratchpad; never another document, never a second soffice, never macros --
+the user sees every window and dialog, and improvisation reads as the harness
+losing control of itself.

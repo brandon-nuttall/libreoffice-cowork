@@ -277,6 +277,58 @@ export function apply(ctx, config = {}) {
     ctx.effect(() => dispose, `cowork-office.${definition.name}`)
   }
 
+  // ── scratchpad ───────────────────────────────────────────────────────────
+
+  // The agent periodically wants a private place to draft and hold intermediate
+  // state before touching the user's document. Left to improvise, it created
+  // ANOTHER LibreOffice window as a scratchpad -- window clutter, occasional
+  // security dialogs, and edits landing somewhere the user is not looking.
+  // This is the first-class version: a plain file, no UI involved, scoped to
+  // this runtime process (which is how session scoping already works for the
+  // turn registry above).
+  const scratchPath = process.env.COWORK_SCRATCHPAD
+    ?? join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'scratchpad.md')
+  register({
+    name: 'scratchpad',
+    description:
+      'A private scratchpad: draft, rehearse and hold intermediate state here ' +
+      'before editing the document. A plain file -- no window, no UI, and it ' +
+      'never touches the user\'s document. Prefer this over improvising any ' +
+      'other document.',
+    parameters: {
+      action: { type: 'string', required: true, enum: ['write', 'append', 'read', 'clear', 'path'] },
+      text: { type: 'string', description: 'Contents for write/append.' },
+    },
+    output: looseOutput((_args, value) => text(value.text ?? 'ok')),
+    async execute(args) {
+      const action = String(args.action ?? '')
+      if (action === 'path') return { text: scratchPath }
+      if (action === 'read') {
+        const body = existsSync(scratchPath)
+          ? (await import('node:fs/promises')).readFile(scratchPath, 'utf8')
+          : '(empty)'
+        return { text: await body }
+      }
+      if (action === 'clear') {
+        if (existsSync(scratchPath)) (await import('node:fs/promises')).unlink(scratchPath)
+        return { text: '(cleared)' }
+      }
+      if (action === 'write') {
+        (await import('node:fs/promises')).writeFile(scratchPath, String(args.text ?? ''), 'utf8')
+        return { text: `(wrote ${String(args.text ?? '').length} chars)` }
+      }
+      if (action === 'append') {
+        const fs = await import('node:fs/promises')
+        const previous = existsSync(scratchPath) ? await fs.readFile(scratchPath, 'utf8') : ''
+        const next = (previous ? previous + '\n' : '') + String(args.text ?? '')
+        fs.writeFile(scratchPath, next, 'utf8')
+        return { text: `(appended ${String(args.text ?? '').length} chars)` }
+      }
+      throw new Error(`unknown scratchpad action: ${action}`)
+    },
+    presentCall: (_args) => ({ card: 'generic', title: 'Scratchpad', kind: 'read' }),
+  })
+
   // ── orientation ──────────────────────────────────────────────────────────
 
   register({
