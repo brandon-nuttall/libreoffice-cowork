@@ -898,9 +898,12 @@ class CoworkUIElement(unohelper.Base, XUIElement):
     def _parsed(self, entry, index):
         """Markdown blocks for one message, parsed once and cached.
 
-        Parsing means opening a hidden Writer document through LibreOffice's
-        Markdown filter, which is far too expensive for every repaint — so the
-        result is cached on the entry and invalidated only when its text changes.
+        Parsing is one pure in-process function (`cowork_markdown.parse`) --
+        rendered markdown must never crash, so there are no secondary paths to
+        fail -- while the per-turn scheduling below keeps the per-chunk render
+        cheap. (The previous design parsed through a hidden LibreOffice
+        document; it produced hundreds of crashes a session and a tower of
+        fallbacks. It is gone.)
         """
         text = entry.get("text") or ""
         cached = entry.get("_blocks")
@@ -917,15 +920,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                                            "italic": False, "mono": False}]}]
             entry["_parsed_from"] = text
             return entry["_blocks"]
-        try:
-            blocks = markdown.parse_with_office(self.ctx, text)
-        except Exception:
-            # Office parse unavailable (circuit breaker, or the session's
-            # Wayland quirk): keep STRUCTURE via the pure-python parser rather
-            # than showing raw markdown -- literal ** markers in the pane were
-            # the visible symptom of the old single-paragraph fallback.
-            _log("office parse unavailable; structural fallback in use")
-            blocks = markdown.parse_fallback(text)
+        blocks = markdown.parse(text)
         entry["_blocks"] = blocks
         entry["_parsed_from"] = text
         return blocks

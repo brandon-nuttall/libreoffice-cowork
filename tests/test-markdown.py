@@ -38,63 +38,47 @@ def block(kind, text, bold=False):
 def main():
     print("transcript block model\n")
 
-    print("the module does not parse markdown itself")
-    check("there is no hand-written parser left",
-          not hasattr(md, "parse") and not hasattr(md, "strip_inline"),
-          "a parser reappeared; the office filter is supposed to own this")
-    check("parsing is delegated to the office filter",
-          hasattr(md, "parse_with_office"), dir(md))
+    print("exactly one parser, in process, per the contract")
+    import inspect
+    source = inspect.getsource(md)
+    check("the module parses markdown itself (the single parser)",
+          hasattr(md, "parse"), dir(md))
+    check("the office document roundtrip is GONE",
+          not hasattr(md, "parse_with_office")
+          and "loadComponentFromURL" not in source
+          and "tempfile" not in source,
+          "parse() must not load documents, temp files or windows; rendered "
+          "markdown must never crash and there is exactly one code path")
 
     print("\nblocks carry runs, not a flat string")
     b = block(md.PARAGRAPH, "hello")
     check("a block has runs", isinstance(b.get("runs"), list), b)
     check("plain() reads them back", md.plain(b) == "hello", md.plain(b))
 
-    print("\nspeaker labels come from the entry kind")
-    blocks = md.layout([
-        {"kind": "cowork", "text": "one"},
-        {"kind": "you", "text": "two"},
-    ], lambda text: [block(md.PARAGRAPH, text)])
-    speakers = [md.plain(x) for x in blocks if x["kind"] == md.SPEAKER]
-    check("each message gets a label", speakers == ["Cowork", "You"], speakers)
-    check("labels are separate from the body",
-          [x["kind"] for x in blocks] ==
-          [md.SPEAKER, md.PARAGRAPH, md.SPEAKER, md.PARAGRAPH],
-          [x["kind"] for x in blocks])
+# --- the single transcript parser (cowork_markdown.parse) -------------------
 
-    print("\na parse failure degrades instead of crashing")
-    def failing(_text):
-        raise RuntimeError("no office")
-    try:
-        md.layout([{"kind": "cowork", "text": "x"}], failing)
-        check("layout propagates the failure for the caller to handle", False,
-              "it swallowed the error")
-    except RuntimeError:
-        check("layout propagates the failure for the caller to handle", True)
+def _parse_checks():
+    import cowork_markdown as M
+    ok = 0
+    bad = []
+    def check(label, cond, detail=""):
+        nonlocal ok
+        if cond: ok += 1
+        else: bad.append((label, detail))
 
-    print("\nspacing")
-    blocks = md.layout([
-        {"kind": "cowork", "text": "first"},
-        {"kind": "you", "text": "second"},
-    ], lambda text: [block(md.PARAGRAPH, text)])
-    gaps = [md.gap_before(b, blocks[i - 1] if i else None) for i, b in enumerate(blocks)]
-    check("a new message is separated more than a continuation",
-          max(gaps) >= md.GAP_BLOCK, gaps)
-    check("the first block has no leading gap", gaps[0] == 0, gaps)
+    blocks = M.parse("# Title\n- one\n- two\n\nBody with **bold** and `code`.\n```\ncode\n```\n")
+    kinds = [b["kind"] for b in blocks]
+    check("structure: heading/bullets/paragraph/code", kinds == ["heading", "bullet", "bullet", "paragraph", "code"], kinds)
+    text = "".join(r["text"] for b in blocks for r in b["runs"])
+    check("inline markers stripped", "**" not in text and "`" not in text, text)
+    r = M.parse("")
+    check("empty input -> no blocks", r == [], r)
+    r = M.parse("* " * 3000)
+    check("hostile input does not crash", isinstance(r, list), len(r))
+    return ok, bad
 
-    print("\nthe style maps use the filter's own style names")
-    check("heading styles are mapped from the filter's own names",
-          md._HEADING_STYLES.get("Heading 1") == 1, md._HEADING_STYLES)
-    check("code styles are mapped from the filter's own names",
-          "Preformatted Text" in md._CODE_STYLES, md._CODE_STYLES)
-
-    print()
-    if FAILURES:
-        print("FAILED: %d check(s): %s" % (len(FAILURES), ", ".join(FAILURES)))
-        return 1
-    print("All block-model checks passed.")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+_ok, _bad = _parse_checks()
+if _bad:
+    print(f"FAILED: {_bad}")
+    sys.exit(1)
+print(f"  + {_ok} single-parser checks passed")

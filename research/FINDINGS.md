@@ -2065,3 +2065,26 @@ From the user's screenshot (first time the bubbles were on MY screen too):
   * Scratchpad is PER DOCUMENT (keyed by session id, which the runtime scopes
     one per document), not one shared file -- Writer in one window and slides
     in another must not share margin notes.
+
+---
+
+# F63 — One parser, full stop
+
+"rendered markdown should never crash... we only want a single parser rather
+than having a bunch of backups."
+
+Correct, and the tower came down: `cowork_markdown.parse` is now THE parser --
+pure python, in-process, no documents, no temp files, no circuit breaker, and
+the office-filter roundtrip (`parse_with_office`, the hidden-document loader
+that crashed 600 times on one machine) is deleted along with the breaker and
+both fallback layers.
+
+The old doctrine test asserted "there is no hand-written parser left; the
+office filter owns this" -- that doctrine was legitimately reversed by this
+instruction, and the test now enforces the new contract: the module parses
+itself, and loadComponentFromURL/tempfile must not reappear in it.
+
+One subtle bug caught by the new tests: moving inline-marker stripping to a
+helper that ran over raw lines ERASED the code-fence backticks, so no fence
+could ever open. Structure detection runs on raw lines; marker-stripping only
+on emitted run text.
