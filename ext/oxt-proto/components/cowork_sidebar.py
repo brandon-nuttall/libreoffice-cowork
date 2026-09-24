@@ -1345,26 +1345,42 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                 if index >= len(rendered):
                     break
                 if row["visible"]:
-                    w_row = max(int(width * (1 - row.get("right", 0)) - row["x"]) - 2, 20)
-                    ctl.setPosSize(row["x"], row["y"] - used, w_row,
+                    who = row.get("who")
+                    bubble_colour = (chat.USER_BG if who == "you"
+                                     else chat.MODEL_BG)
+                    px = row["x"]
+                    full_w = int(width * (1 - row.get("right", 0)) - row["x"]) - 2
+                    text_w = max(full_w - 2 * chat.PAD_H, 20)
+                    ctl.setPosSize(px + chat.PAD_H, row["y"] - used, text_w,
                                    row["h"], POSSIZE)
                     ctl.setVisible(True)
-                    # Fill the seam between consecutive visible blocks of the
-                    # SAME speaker with that speaker's bubble colour; between
-                    # DIFFERENT speakers the pane colour IS the separator.
-                    if previous is not None and previous.get("who") == row.get("who"):
+                    if previous is not None and previous.get("who") == who:
                         gap_top = previous["y"] + previous["h"]
                         seam = row["y"] - gap_top
-                        if seam > 3:
+                        if seam > 2:
                             fill = self._filler(filler_index)
-                            fill.getModel().BackgroundColor = (
-                                chat.USER_BG if row.get("who") == "you"
-                                else chat.MODEL_BG)
-                            # keep the bubble's own side-insets
-                            fill.setPosSize(row["x"], gap_top + 1, w_row,
-                                            seam - 2, POSSIZE)
+                            fill.getModel().BackgroundColor = bubble_colour
+                            fill.setPosSize(px, gap_top + 1, full_w, seam - 2,
+                                            POSSIZE)
                             fill.setVisible(True)
                             filler_index += 1
+                    # Inner padding: strips of the bubble colour on both sides
+                    # of the text, so the words stop touching the edge. (The
+                    # toolkit has no transparent label, so the bubble is drawn
+                    # as disjoint same-colour rectangles.)
+                    left = self._filler(filler_index)
+                    left.getModel().BackgroundColor = bubble_colour
+                    left.setPosSize(px, row["y"] - used, chat.PAD_H,
+                                    row["h"], POSSIZE)
+                    left.setVisible(True)
+                    filler_index += 1
+                    right = self._filler(filler_index)
+                    right.getModel().BackgroundColor = bubble_colour
+                    right.setPosSize(px + text_w + chat.PAD_H, row["y"] - used,
+                                     max(full_w - chat.PAD_H - text_w, 4),
+                                     row["h"], POSSIZE)
+                    right.setVisible(True)
+                    filler_index += 1
                     previous = row
                 else:
                     if index == 0 or self._plan["rows"][index - 1].get("visible"):

@@ -2111,3 +2111,21 @@ visible same-speaker rows in that speaker's bubble colour. Between different
 speakers the pane colour remains the separator, on both sides symmetrically:
 user turns are separate boxes by speaker, model turns now read as one bubble
 per turn, mirror-backed.
+
+---
+
+# F65 — Inner padding by colour rings, and near-solid turns
+
+Two more points from the user's screenshot:
+
+  * Text ran to the very edge of every bubble. The toolkit has no transparent
+    label and no inner-indent property on FixedText, so the bubble is now
+    composed of disjoint same-colour rectangles: the text label inset by
+    PAD_H (18 units) on each side, with LEFT and RIGHT strip controls
+    completing the ring. No overlap, no z-order games. Same trick as the seam
+    fillers -- the bubble is a made surface, and we only add more of it.
+  * "What I'd like from you" was five boxes: ONE model turn (heading +
+    paragraph + three bullets) whose internal gaps read as separators.
+    Model-internal gaps are now near-solid (para 4, code 4, heading 14/2) --
+    the seam filler paints those few units, so the turn reads as one box --
+    while the speaker gap (60) stays the visible boundary between sides.

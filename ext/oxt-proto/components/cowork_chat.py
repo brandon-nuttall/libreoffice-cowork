@@ -30,11 +30,16 @@ MODEL_X_FRAC = 0.05       # the model's content starts 5% from the left
 MODEL_RIGHT_FRAC = 0.20   # and ends 20% from the right
 BLOCK_PAD = 2        # vertical padding added below observed content height
 BUBBLE_PAD = 6       # extra below-content padding inside a user bubble
-GAP_BLOCK = 8        # between paragraphs of the same speaker
-GAP_HEADING_BEFORE = 24
-GAP_HEADING_AFTER = 4
+GAP_BLOCK = 4        # between blocks inside ONE model turn (near-solid:
+                     # the seam filler paints these, so the turn reads as a
+                     # single box)
+GAP_HEADING_BEFORE = 14
+GAP_HEADING_AFTER = 2
 GAP_MSG = 60         # between speakers — the strongest visual break
-GAP_CODE = 6
+GAP_CODE = 4
+# Inner padding: the label is inset inside its bubble by PAD_H on each side,
+# and colour strips fill the ring between bubble edge and text.
+PAD_H = 18
 RULE_HEIGHT = 4
 BAR_W = 10           # vertical scrollbar width
 BAR_GAP = 2
