@@ -77,8 +77,8 @@ def parse(text):
 
     def para(line):
         blocks.append({"kind": "paragraph",
-                       "runs": [{"text": line, "bold": False, "italic": False,
-                                 "mono": False}]})
+                       "runs": [{"text": clean(line), "bold": False,
+                                 "italic": False, "mono": False}]})
 
     # Inline markers are stripped: the office parser removes them, and the
     # fallback must not show literal ** or backticks just because the office
@@ -113,7 +113,7 @@ def parse(text):
             level = len(stripped) - len(stripped.lstrip("#"))
             words = stripped[level:].strip()
             blocks.append({"kind": "heading",
-                           "runs": [{"text": words, "bold": True,
+                           "runs": [{"text": clean(words), "bold": True,
                                      "italic": False, "mono": False}],
                            "level": level})
             continue
@@ -124,8 +124,9 @@ def parse(text):
             # A run of dashes in prose ("--- ") is text, not a bullet; the
             # check above already routed exact rules.
             blocks.append({"kind": "bullet",
-                           "runs": [{"text": stripped[2:].strip(), "bold": False,
-                                     "italic": False, "mono": False}]})
+                           "runs": [{"text": clean(stripped[2:].strip()),
+                                     "bold": False, "italic": False,
+                                     "mono": False}]})
             continue
         ordered = None
         for marker in ("1. ", "1) "):
@@ -133,8 +134,9 @@ def parse(text):
         if len(stripped) > 2 and stripped[0].isdigit() and stripped[1] in ".)" \
                 and stripped[2] == " ":
             blocks.append({"kind": "bullet",
-                           "runs": [{"text": stripped[3:].strip(), "bold": False,
-                                     "italic": False, "mono": False}]})
+                           "runs": [{"text": clean(stripped[3:].strip()),
+                                     "bold": False, "italic": False,
+                                     "mono": False}]})
             continue
         para(line.rstrip())
     if code_lines:
