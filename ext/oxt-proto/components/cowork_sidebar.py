@@ -235,9 +235,11 @@ def _load_conversation(frame):
         return None
     try:
         stored = props.getPropertyValue("CoworkChat")
-        entries = _json.loads(stored)
-        if isinstance(entries, list):
-            return entries
+        raw = _json.loads(stored)
+        if isinstance(raw, list):
+            return [{"kind": e.get("kind", "cowork"),
+                     "text": e.get("text", "")}
+                    for e in raw if isinstance(e, dict)]
     except Exception:
         pass
     return None
@@ -254,7 +256,12 @@ def _save_conversation(frame, entries):
     props = _doc_properties(frame)
     if props is None:
         return
-    payload = _json.dumps(entries[-200:])          # bounded, matching the in-memory cap
+    # Strip the parse cache: only kind and text are conversation. Persisting
+    # `_blocks`/`_parsed_from` bloated the document metadata and let a stale
+    # cache survive a code change.
+    slim = [{"kind": e.get("kind", "cowork"), "text": e.get("text", "")}
+            for e in entries[-200:]]
+    payload = _json.dumps(slim)
     try:
         try:
             props.setPropertyValue("CoworkChat", payload)
@@ -746,7 +753,11 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         # drawn rather than stored, so nothing has to be invalidated when its
         # wording changes — the earlier design cached a greeting per document and
         # kept showing stale text after the code moved on.
-        _TRANSCRIPTS.setdefault(_doc_key(self.frame), [])
+        # NOTE: deliberately no _TRANSCRIPTS.setdefault here. Seeding an empty
+        # list before the lazy loader runs would put the document's key in the
+        # table, and _entries() only consults the persisted conversation when
+        # the key is missing — the poisoned seed is why a saved chat was never
+        # reloaded.
         self._render()
 
         self._resize_listener = _RelayoutListener(self)

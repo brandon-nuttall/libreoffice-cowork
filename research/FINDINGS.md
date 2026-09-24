@@ -1926,3 +1926,38 @@ PROCESS NOTES, recorded because they cost hours:
     pixel scans cannot distinguish from the panel. The in-process probe — read
     the pool controls' model and geometry through UNO — is the reliable
     verifier; screenshots are now for humans only.
+
+---
+
+# F58 — The chat was never lost; it was never loaded
+
+The user reported the previous chat gone. Evidence first: `CoworkChat` was
+present BOTH in the live document's property bag AND in the saved file's
+meta.xml — save worked, storage worked. The load path never ran:
+
+    _build_window:  _TRANSCRIPTS.setdefault(doc_key, [])   # poisoned
+    _entries:       if key not in _TRANSCRIPTS: load(...)  # never fires
+
+The build seeded an empty list under the document's key before the lazy loader
+could run, and the loader's trigger is "key is missing". Removed the seed;
+`_entries()` owns loading. Also trimmed what is persisted: only {kind, text}
+now — the parse cache (`_blocks`, `_parsed_from`) was bloating metadata and
+risking stale caches across code changes; loading sanitises old saves too.
+
+## The wheel, answered with receipts
+
+The user asked whether other sidebar panels support the wheel. They do — but
+not at any API we can reach:
+
+  * The UNO AWT module reference has NO wheel listener of any kind
+    (api.libreoffice.org/docs/idl/ref/namespacecom_1_1sun_1_1star_1_1awt.html);
+    confirmed in this install's registry: XMouseWheelListener import fails and
+    MouseWheelEvent is "unknown" to createUnoStruct.
+  * The stock decks scroll because they are C++ (sfx2/source/sidebar/Deck.cxx):
+    the deck is a VCL window whose wheel-to-scrollbar handling happens below
+    the UNO surface.
+  * Consequence for us: wheel over the transcript labels cannot be hooked from
+    a UNO extension in this LibreOffice. Native wheel over the scrollbar strip
+    itself still works, as does dragging and keyboard on a focused bar. A
+    cleaner fix belongs upstream (expose wheel in UNO AWT), not in workarounds
+    here.
