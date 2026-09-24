@@ -900,6 +900,60 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         except Exception:
             _log(traceback.format_exc())
 
+    def _build_commands_menu(self):
+        """A real popup menu for the + button: slash commands live here."""
+        pm = self.ctx.ServiceManager.createInstanceWithContext(
+            "com.sun.star.awt.PopupMenu", self.ctx)
+        if pm is None:
+            raise RuntimeError("PopupMenu service unavailable")
+        pm.insertItem(1, "/new\tstart a fresh conversation", 0, 1)
+        pm.insertItem(2, "/copy\tcopy this conversation", 0, 2)
+        pm.addMenuListener(self)
+        return pm
+
+    def _show_commands(self):
+        if self._commands is None:
+            return
+        btn = self._control_by_name("btnCommands")
+        if btn is None:
+            return
+        try:
+            ps = btn.getPosSize()
+            rect = uno.createUnoStruct("com.sun.star.awt.Rectangle")
+            rect.X = ps.X
+            rect.Y = ps.Y
+            rect.Width = max(ps.Width, 260)
+            rect.Height = ps.Height
+            self._commands.execute(btn.getPeer(), rect)
+        except Exception:
+            _log("command palette failed:\n%s" % traceback.format_exc())
+
+    def itemSelected(self, event):
+        """XMenuListener: /new and /copy dispatch like the old buttons did."""
+        try:
+            command = int(event.MenuId)
+        except Exception:
+            return
+        if command == 1:
+            self.clear()
+        elif command == 2:
+            self._copy_transcript()
+
+    def itemHighlighted(self, _event):
+        pass
+
+    def itemAdded(self, _event):
+        pass
+
+    def itemRemoved(self, _event):
+        pass
+
+    def menuClosed(self, _event):
+        pass
+
+    def menuOpened(self, _event):
+        pass
+
     def _paint_composer_chrome(self, margin_x, y, w, h):
         """The composer pill: ring strips + pane-coloured corner cuts."""
         if self._pnl_parent is None:
