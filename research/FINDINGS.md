@@ -2198,3 +2198,25 @@ From the working screenshot (first build the user could actually evaluate):
     band of a turn; rounding cuts (R=9, three orders brighter than the old
     3-unit slivers) only on run top/bottom edges; hidden rows no longer close
     a run (an off-viewport row is still inside its turn's bubble).
+
+---
+
+# F69 — "Writer crashes on open" was the recovery pass, not the extension
+
+After killing a live LibreOffice mid-session (the user's own fresh-start
+request), the next normal boot ran LibreOffice's DOCUMENT-RECOVERY pass over
+the autosave backup -- with the Cowork panel auto-activating inside it --
+and that combination crashed their startup. Two boots on a profile COPY with
+`--norestore` were healthy for their full timeouts while the extension was
+active, which ruled the extension out as the boot-crash source.
+
+Fix, applied: the recovery backup was preserved to
+`~/Documents/cowork-recovered/AI acceleration outline.odt.bak` and removed
+from LibreOffice's recovery path (backup/ emptied, stale lock files removed).
+Their next boot therefore has nothing to recover and starts clean.
+
+Standing lesson recorded: killing soffice mid-session costs a recovery pass;
+before declaring an extension crash, boot twice on a copy of the profile --
+once with `--norestore` and once without -- and compare. Install-verification
+now also greps the DEPLOYED copy (not the source) for feature markers, after a
+stale .oxt masqueraded as a fresh install (F67).
