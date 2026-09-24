@@ -124,19 +124,29 @@ def main():
     check("a heading is upper-cased so it reads as one", "SUMMARY" in lines, lines)
     check("a bullet gets a visible marker",
           any(l.startswith("• ") for l in lines), lines)
+    bullet_lines = [l for l in lines if l.startswith("•")]
+    check("a bullet is emitted as ONE line containing its full text",
+          any("first point" in l for l in bullet_lines), bullet_lines)
     check("no markdown markers reach the screen",
           not any("**" in l or l.startswith("# ") for l in lines), lines)
     check("turns are separated by blank lines",
           "" in lines and lines.index("") < len(lines) - 1, lines)
-    check("a long paragraph is wrapped, not clipped",
-          all(len(l) <= 20 for l in lines), [l for l in lines if len(l) > 20])
+    check("a long paragraph is emitted as one line (the control wraps visually)",
+          any(len(l) > 20 for l in lines), "expected at least one line over 20 chars")
 
-    print("\nplain text fits any width, which is the whole reason for it")
+    print("\nplain text is NOT pre-wrapped — the control wraps visually")
+    # A paragraph must be emitted as ONE line. Pre-wrapping to hard newlines made
+    # copying the transcript useless: a five-word paragraph arrived as five lines,
+    # each needing a carriage return removed by hand.
     for columns in (6, 10, 14, 40, 120):
         text = L.to_plain_text(blocks, columns)
-        longest = max(len(l) for l in text.split("\n"))
-        check("columns=%d: nothing exceeds the width" % columns,
-              longest <= max(columns, 40) + 4, longest)
+        paragraph_lines = [l for l in text.split("\n")
+                           if l.strip() and not l.startswith("•")
+                           and not l.startswith("    ")]
+        # A paragraph that the source text wrote as one line must come back as one.
+        has_long = any(len(l) > 30 for l in paragraph_lines)
+        check("columns=%d: long paragraphs are single lines" % columns,
+              has_long, "expected a paragraph over 30 chars at columns=%d" % columns)
 
     print("\nempty input renders as empty, not as junk")
     check("no blocks gives an empty string", L.to_plain_text([], 20) == "")

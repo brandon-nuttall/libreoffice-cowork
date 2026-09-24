@@ -289,6 +289,11 @@ def to_plain_text(blocks, columns):
     A single text control also does the two things the label stack kept getting
     wrong: it wraps natively at any width, and it scrolls natively.
 
+    NO PRE-WRAPPING: a paragraph is emitted as ONE line and the text control wraps
+    it VISUALLY. The first version wrapped text to hard newlines at the sidebar's
+    column count, which made copying the transcript useless — a five-word paragraph
+    arrived as five lines, each needing a carriage return removed by hand.
+
     Emphasis is dropped rather than lost: the parser has already removed the
     markers, so "**bold**" arrives as "bold". Headings become their text on their
     own line, bullets become "•", code is indented, and rules become a line of
@@ -305,19 +310,17 @@ def to_plain_text(blocks, columns):
 
         if who != previous_who and previous_who is not None:
             out.append("")                      # a blank line between messages
-            out.append("")                      # and one more, so turns are clear
 
         if kind == HEADING:
             out.append(text.upper() if len(text) < 60 else text)
         elif kind == BULLET:
-            for line in wrap(text, columns - 2):
-                out.append("• " + line)
+            out.append("• " + text)             # one line; the control wraps it
         elif kind == CODE:
             for line in text.split("\n"):
                 out.append("    " + line)
         elif kind == RULE:
-            out.append("-" * min(columns, 30))
+            out.append("-" * min(columns, 40))
         else:
-            out.extend(wrap(text, columns))
+            out.append(text)                   # one line; the control wraps it
         previous_who = who
     return "\n".join(out)

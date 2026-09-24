@@ -969,9 +969,14 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         Centred prose rather than positioned labels: the panel is 2.3cm wide, so a
         centred label is clipped on the left anyway, and a text control wraps.
         """
-        lines = ["", "", "How can I help", "with this document?", "",
-                 _doc_name(self.frame), "", ""]
-        lines += ["  " + suggestion for suggestion in self._SUGGESTIONS]
+        # No hard line breaks mid-sentence: the control wraps visually, and every
+        # inserted newline ends up in the clipboard when the user copies it.
+        lines = [
+            "How can I help with this document?",
+            _doc_name(self.frame),
+            "",
+        ]
+        lines += list(self._SUGGESTIONS)
         try:
             control.setText("\n".join(lines))
             control.setSelection(uno.createUnoStruct(
