@@ -584,6 +584,7 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         self._transcript_pool = []
         self._fillers = []
         self._chrome_fillers = []
+        self._commands = None
         self._chrome_fillers = []
         self._line_pitch = 0.0
         self._line_top = 0.0
@@ -728,14 +729,32 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                      "send:\n%s" % traceback.format_exc())
 
         listener = _PanelListener(self)
-        for name, label in (("btnSend", "Send"), ("btnClear", "Clear"),
-                            ("btnCopy", "Copy")):
+        # The composer: a "+" command button on the LEFT of the pill and the
+        # accent UP-ARROW send on the right (Claude's composition). Clear and
+        # Copy became slash commands -- utility buttons spent a permanent row
+        # on three characters of typing.
+        for name, label, colour in (("btnCommands", "\uff0b", None),
+                                    ("btnSend", "\u2191", chat._COLOR_ACCENT)):
             button = self._control(container, name, "UnoControlButton",
                                    "UnoControlButtonModel",
                                    Label=label, PushButtonType=0)
             if button is not None:
                 button.addActionListener(listener)
+                try:
+                    model = button.getModel()
+                    if colour is not None:
+                        model.BackgroundColor = colour
+                        model.TextColor = 0xFFFFFF
+                    else:
+                        model.BackgroundColor = chat.COMPOSER_BG
+                except Exception:
+                    _log("button paint failed:\n%s" % traceback.format_exc())
         self._listeners.append(listener)
+        try:
+            self._commands = self._build_commands_menu()
+        except Exception:
+            self._commands = None
+            _log("command palette unavailable:\n%s" % traceback.format_exc())
 
         _log("controls built: %s" % sorted(self._controls))
 
