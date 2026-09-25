@@ -44,6 +44,11 @@ SHOTS="$SANDBOX/shots"
 DOC="$SANDBOX/document.txt"
 PANEL_LOG="$SANDBOX/panel.log"
 PORT="${SANDBOX_PORT:-2098}"
+# The runtime's HTTP port. The sandbox MUST NOT use the default 8765: a sandbox
+# runtime left on the user's port gets adopted by the user's panel, and the
+# agent then tries to act on a document in a sandbox office that is not there
+# ("I can't reach LibreOffice yet ... something else holds port 8765").
+RUNTIME_PORT="${SANDBOX_RUNTIME_PORT:-8799}"
 
 mkdir -p "$SHOTS" "$PROFILE"
 
@@ -100,6 +105,7 @@ start_office() {
       SAL_USE_VCLPLUGIN="${SANDBOX_VCL:-gtk3}" GDK_BACKEND=x11 \
       COWORK_SIDEBAR_LOG="$PANEL_LOG" \
       COWORK_ACCEPT="socket,host=127.0.0.1,port=$PORT" \
+      COWORK_PORT="$RUNTIME_PORT" \
       soffice --norestore -env:UserInstallation="file://$PROFILE" "$DOC" \
       >"$SANDBOX/soffice.log" 2>&1 &
   local pid=$!

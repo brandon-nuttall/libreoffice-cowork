@@ -1440,25 +1440,41 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                 if st["observed"]:
                     # Measure at the TEXT width (the label is inset PAD_H on
                     # each side of the bubble). Measuring at the bubble width
-                    # undercounted the wrapped lines by the padding, and the
-                    # label clipped the tail of long replies ("I can ...").
+                    # undercounted the wrapped lines by the padding.
+                    #
+                    # PROVISIONAL HEIGHT MUST FIT THE WHOLE TEXT: characters
+                    # beyond the control's height are not laid out, and their
+                    # accessible bounds read as ZERO -- a 1749-char reply
+                    # measured lastY=0,lastH=0, collapsed to one line, and drew
+                    # an ellipsis. Generous, so every line exists to measure.
                     text_w = max(w - 2 * chat.PAD_H, 20)
-                    ctl.setPosSize(x + chat.PAD_H, y + gap, text_w, 800, POSSIZE)
+                    provisional_h = max(800, len(text) * 3 + 400)
+                    ctl.setPosSize(x + chat.PAD_H, y + gap, text_w,
+                                   provisional_h, POSSIZE)
                     h = None
                     try:
                         acc = ctl.getAccessibleContext()
                         n = acc.getCharacterCount()
                         if n:
                             last = acc.getCharacterBounds(n - 1)
-                            lines = round((last.Y - top) / pitch) + 1
-                            h = int(top + lines * pitch + st["pad_b"])
+                            # A zero box means the line was never laid out --
+                            # treat as a failed measurement, not as height 0.
+                            if last.Y > 0 or n <= 1:
+                                lines = max(int(round((last.Y - top) / pitch)) + 1, 1)
+                                # The LINE is pitch tall; last.Height is only
+                                # the glyph box (measured 4 units), so the line
+                                # bottom is last.Y + pitch.
+                                h = int(top + lines * pitch + st["pad_b"])
                     except Exception:
                         _log("measure failed:\n%s" % traceback.format_exc())
                     if h is None or h <= 0:
-                        # Fallback: estimate from wrapped-line count at the
-                        # observed pitch, assuming ~1 line per 12 chars.
-                        h = int(top + (len(text) // 12 + 1) * pitch
-                                + st["pad_b"])
+                        # Fallback when even the accessible bounds are unusable:
+                        # estimate wrapped lines from the text width. Slightly
+                        # over rather than under -- too tall is blank space,
+                        # too short is a truncated reply.
+                        per_line = max(int(text_w / 11.0), 8)
+                        lines = max(int(len(text) / per_line) + 1, 1)
+                        h = int(top + lines * pitch + st["pad_b"])
                 else:
                     h = st["fixed_h"]
 

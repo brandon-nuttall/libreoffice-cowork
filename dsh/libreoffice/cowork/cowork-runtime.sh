@@ -17,7 +17,11 @@
 # Usage:  cowork-runtime [--stop]
 #
 # Environment:
-#   COWORK_PORT      endpoint port (default 8765)
+#   COWORK_PORT      endpoint port (default 8765). One runtime per port: two
+#                    runtimes on one port means the panel adopts whichever
+#                    answers first, and an agent can then act on the wrong
+#                    office -- or on a dead sandbox. Test harnesses must set a
+#                    distinct COWORK_PORT (tests/sandbox-ui.sh uses 8799).
 #   COWORK_DSH_BIN   path to dsh/lib/bin.js if it is not on PATH
 #   COWORK_ACCEPT    which LibreOffice to target, e.g.
 #                    "socket,host=127.0.0.1,port=2098" or "pipe,name=lo-cowork-me".

@@ -2327,3 +2327,47 @@ a stale office on old modules — the exact trap documented in F70, so the
 procedure now mandates: kill by PID, verify the port is clear, verify the
 listener PID is new, and require the sidebar's OWN "controls built" line in
 the panel log before believing any green.
+
+---
+
+# F73 — Why long replies truncated, and a port collision of my own making
+
+## The truncation: accessible bounds read ZERO beyond the control height
+
+Instrumenting the measure pass produced the答案 immediately:
+
+    measure: chars=1749 lastY=0 lastH=0 pitch=36.0
+
+A 1749-character reply measured ZERO for the last character. The cause:
+characters that fall OUTSIDE the provisional control height are never laid
+out, and their accessible bounds read as (0,0) rather than raising. The old
+code then computed `lines = round((0 - top)/pitch) + 1 = 1` and gave the
+control a one-line height -- so the label clipped and VCL drew an ellipsis.
+Short messages measured fine, which is why this survived so long.
+
+Three fixes together: the provisional height now fits the whole text
+(`max(800, len(text)*3 + 400)`); the content bottom uses the LINE pitch
+(`last.Y + pitch`), because the character box height measured 4 units -- a
+glyph box, not a line; and a measurement that still returns zeros is treated
+as a failure and estimated from the text width (over-estimating slightly,
+since too tall is blank space and too short is a truncated reply).
+
+Verified on a four-paragraph reply: every paragraph renders完全, no ellipsis.
+Colour-band analysis of the capture confirms the turn is ONE continuous
+bubble (MODEL_BG unbroken from y=40 to y=791).
+
+## The port collision: my sandbox runtime hijacked the user's panel
+
+The user's agent reported "I can't reach LibreOffice yet ... something else
+holds port 8765" and then debugged its own sandbox: it was talking to a
+runtime I had left running for SIXTEEN HOURS on the default port. The panel
+found 8765 open, assumed its runtime was up, and sent the turn into my dead
+sandbox -- whose office no longer existed.
+
+Root cause: tests/sandbox-ui.sh set the UNO acceptor port but NOT
+COWORK_PORT, so every sandbox runtime I started bound the user's port.
+
+Fixed: the sandbox now uses 8799 (`SANDBOX_RUNTIME_PORT`), and the runtime
+launcher documents the invariant -- one runtime per port, test harnesses must
+never use the default. A stronger product guard is noted for later: a panel
+should verify the runtime it finds can actually serve ITS office.
