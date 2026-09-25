@@ -352,11 +352,17 @@ class _PanelListener(unohelper.Base, XActionListener, XTextListener):
             label = getattr(model, "Label", "")
         except Exception:
             label = ""
-        # The + opens the command palette; the up-arrow submits. Clear and
-        # Copy live behind the palette now (slash commands), so the canvas
-        # spends no vertical space on utility buttons.
-        if label == "＋":
-            element._show_commands()
+        # The + toggles the in-pill command row (new / copy); the up-arrow
+        # submits. Plain buttons, the same mechanism as send, which fires
+        # reliably -- XPopupMenu's modal execute() proved focus-fragile.
+        if label == "+" or label == "＋":
+            element._toggle_commands()
+        elif label == "new":
+            element._toggle_commands()      # collapse after running
+            element.clear()
+        elif label == "copy":
+            element._toggle_commands()
+            element._copy_transcript()
         else:
             element.submit()
 
@@ -449,46 +455,6 @@ class _TextTransferable(unohelper.Base, XTransferable):
 
     def isDataFlavorSupported(self, flavor):
         return str(flavor.MimeType).startswith("text/plain")
-
-
-class _MenuListener(unohelper.Base, XMenuListener):
-    """The + palette's dispatch.
-
-    A dedicated class, because pyuno adapts Python objects only when the
-    interface is DECLARED on the class: the first version passed the element
-    -- which inherits neither XMenuListener nor anything close -- so the
-    adaptation failed, the build's guard swallowed it, and the palette
-    silently never worked. Method set verified against the live registry's
-    reflection: itemHighlighted, itemSelected, itemActivated, itemDeactivated.
-    """
-
-    def __init__(self, element):
-        self.element = element
-
-    def itemSelected(self, event):
-        element = self.element
-        if element is None:
-            return
-        try:
-            command = int(event.MenuId)
-        except Exception:
-            return
-        if command == 1:
-            element.clear()           # /new: fresh conversation + metadata
-        elif command == 2:
-            element._copy_transcript()
-
-    def itemHighlighted(self, _event):
-        pass
-
-    def itemActivated(self, _event):
-        pass
-
-    def itemDeactivated(self, _event):
-        pass
-
-    def disposing(self, _event):
-        self.element = None
 
 
 class _ScrollListener(unohelper.Base, XAdjustmentListener):
@@ -772,7 +738,13 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         # accent UP-ARROW send on the right (Claude's composition). Clear and
         # Copy became slash commands -- utility buttons spent a permanent row
         # on three characters of typing.
+        # The + toggles an in-pill command row (new / copy). This uses plain
+        # buttons -- the same mechanism as send, which provably fires -- rather
+        # than XPopupMenu, whose modal execute() is focus/position-fragile and
+        # unreliable on Wayland. The command buttons start hidden.
         for name, label, colour in (("btnCommands", "+", None),
+                                    ("btnCmdNew", "new", None),
+                                    ("btnCmdCopy", "copy", None),
                                     ("btnSend", "\u2191", _COLOR_ACCENT)):
             button = self._control(container, name, "UnoControlButton",
                                    "UnoControlButtonModel",
@@ -791,11 +763,14 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                 except Exception:
                     _log("button paint failed:\n%s" % traceback.format_exc())
         self._listeners.append(listener)
-        try:
-            self._commands = self._build_commands_menu()
-        except Exception:
-            self._commands = None
-            _log("command palette unavailable:\n%s" % traceback.format_exc())
+        self._commands_expanded = False
+        for hidden in ("btnCmdNew", "btnCmdCopy"):
+            ctl = self._control_by_name(hidden)
+            if ctl is not None:
+                try:
+                    ctl.setVisible(False)
+                except Exception:
+                    pass
 
         _log("controls built: %s" % sorted(self._controls))
 
@@ -901,6 +876,10 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                         _COMPOSER_HEIGHT)
             self._place("btnCommands", _MARGIN + 6, cmd_y + 2, 34,
                         cmd_row_h - 4)
+            self._place("btnCmdNew", _MARGIN + 6 + 40, cmd_y + 2, 52,
+                        cmd_row_h - 4)
+            self._place("btnCmdCopy", _MARGIN + 6 + 40 + 56, cmd_y + 2, 52,
+                        cmd_row_h - 4)
             self._place("btnSend", _MARGIN + inner - 40, cmd_y + 2, 34,
                         cmd_row_h - 4)
             self._paint_composer_chrome(
@@ -943,33 +922,16 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         except Exception:
             _log(traceback.format_exc())
 
-    def _build_commands_menu(self):
-        """A real popup menu for the + button: slash commands live here."""
-        pm = self.ctx.ServiceManager.createInstanceWithContext(
-            "com.sun.star.awt.PopupMenu", self.ctx)
-        if pm is None:
-            raise RuntimeError("PopupMenu service unavailable")
-        pm.insertItem(1, "/new\tstart a fresh conversation", 0, 1)
-        pm.insertItem(2, "/copy\tcopy this conversation", 0, 2)
-        pm.addMenuListener(_MenuListener(self))
-        return pm
-
-    def _show_commands(self):
-        if self._commands is None:
-            return
-        btn = self._control_by_name("btnCommands")
-        if btn is None:
-            return
-        try:
-            ps = btn.getPosSize()
-            rect = uno.createUnoStruct("com.sun.star.awt.Rectangle")
-            rect.X = ps.X
-            rect.Y = ps.Y
-            rect.Width = max(ps.Width, 260)
-            rect.Height = ps.Height
-            self._commands.execute(btn.getPeer(), rect)
-        except Exception:
-            _log("command palette failed:\n%s" % traceback.format_exc())
+    def _toggle_commands(self):
+        """Show/hide the in-pill command row (new / copy) next to the +."""
+        self._commands_expanded = not getattr(self, "_commands_expanded", False)
+        for name in ("btnCmdNew", "btnCmdCopy"):
+            ctl = self._control_by_name(name)
+            if ctl is not None:
+                try:
+                    ctl.setVisible(self._commands_expanded)
+                except Exception:
+                    _log("command toggle failed:\n%s" % traceback.format_exc())
 
     def _paint_composer_chrome(self, margin_x, y, w, h):
         """The composer pill: ring strips + pane-coloured corner cuts."""
@@ -1218,8 +1180,13 @@ class CoworkUIElement(unohelper.Base, XUIElement):
         if button is None:
             return
         try:
-            button.getModel().Label = "Working…" if busy else label
-            button.getModel().Enabled = not busy
+            model = button.getModel()
+            # The pill's send button is 34 units wide -- "Working…" never fits.
+            # Busy means disabled and dimmed, with the arrow kept: a greyed
+            # arrow reads as "sending" without a clipped word.
+            model.Enabled = not busy
+            model.Label = label
+            model.TextColor = 0x808080 if busy else 0xFFFFFF
         except Exception:
             _log(traceback.format_exc())
 
@@ -1471,9 +1438,12 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                 x = int(width * st["x_frac"])
                 w = max(int(width * (1 - st["x_frac"] - st["right_frac"])) - 2, 20)
                 if st["observed"]:
-                    # Pass 1: generous height, final width and position, so the
-                    # toolkit wraps at the real width.
-                    ctl.setPosSize(x, y + gap, w, 800, POSSIZE)
+                    # Measure at the TEXT width (the label is inset PAD_H on
+                    # each side of the bubble). Measuring at the bubble width
+                    # undercounted the wrapped lines by the padding, and the
+                    # label clipped the tail of long replies ("I can ...").
+                    text_w = max(w - 2 * chat.PAD_H, 20)
+                    ctl.setPosSize(x + chat.PAD_H, y + gap, text_w, 800, POSSIZE)
                     h = None
                     try:
                         acc = ctl.getAccessibleContext()
@@ -1496,7 +1466,8 @@ class CoworkUIElement(unohelper.Base, XUIElement):
                                   "right": st["right_frac"],
                                   "who": block.get("who"), "h": h,
                                   "gap": gap})
-                ctl.setPosSize(x, y + gap, w, h, POSSIZE)
+                ctl.setPosSize(x + chat.PAD_H, y + gap,
+                               max(w - 2 * chat.PAD_H, 20), h, POSSIZE)
                 rendered.append(ctl)
                 y += gap + h
                 prev = block
